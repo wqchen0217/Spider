@@ -1,0 +1,583 @@
+---
+title: "MinorGland-QC"
+author: "Wenqing Chen"
+date: "2022-11-06"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+    df_print: paged
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  
+---
+
+# library
+
+```{r setup1, include=FALSE}
+
+# install.packages('Seurat') 
+# install.packages("tidyverse")
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(ggplot2)
+library(pheatmap)
+library(rafalib)
+library(ggraph)
+library(clustree)
+
+# install.packages('BiocManager')
+# BiocManager::install('multtest')
+# install.packages('metap')
+# BiocManager::install('limma')
+# install.packages('harmony')
+# install.packages('venn')
+# install.packages('pheatmap')
+# if(!require(clustree)){install.packages('clustree', dependencies=FALSE)}
+```
+
+
+
+# add data to the analysis
+
+```{r adding data to the analysis, include=FALSE}
+
+# Load 10x data
+Minor01	<-	Read10X(data.dir=	paste(params$workingDir,"data/scRNA/minorGland/P23951_1004/", sep = "/"))
+Minor02	<-	Read10X(data.dir=	paste(params$workingDir,"data/scRNA/minorGland/P23951_1008/", sep = "/"))
+Minor03	<-	Read10X(data.dir=	paste(params$workingDir,"data/scRNA/minorGland/P23951_1010/", sep = "/"))
+Minor04	<-	Read10X(data.dir=	paste(params$workingDir,"data/scRNA/minorGland/P23951_1012/", sep = "/"))
+Minor05	<-	Read10X(data.dir=	paste(params$workingDir,"data/scRNA/minorGland/P23951_1014/", sep = "/"))
+
+# Create seurat object
+### For Minor01.data, there is a warning: Feature names cannot have underscores ('_'), replacing with dashes ('-')Error in data.frame(row.names = rownames(x = data)) : duplicate row.names: tret1-2, lap-2, thus modified dataset: tret1_2 --> tret1_2.0; lap_2 --> lap_2.0
+Minor01.data	<-	CreateSeuratObject(	Minor01 ,	project	=	"Minor_01")
+Minor02.data	<-	CreateSeuratObject(	Minor02 ,	project	=	"Minor_02")
+Minor03.data	<-	CreateSeuratObject(	Minor03 ,	project	=	"Minor_03")
+Minor04.data	<-	CreateSeuratObject(	Minor04 ,	project	=	"Minor_04")
+Minor05.data	<-	CreateSeuratObject(	Minor05 ,	project	=	"Minor_05")
+
+
+# Merging all samples
+LarSco.combined <- merge(Minor01.data, y = c(Minor02.data, Minor03.data, Minor04.data, Minor05.data), 
+                         add.cell.ids = c("Minor_01", "Minor_02", "Minor_03", "Minor_04", "Minor_05"))
+
+# save
+LarSco_dataframe <- data.frame(table(Idents(LarSco.combined)))
+sample_cellcount_file <- paste(params$workingDir, params$MinorResultDir, "Sample_cellcount.txt", sep = '/')
+write.table(LarSco_dataframe, file = sample_cellcount_file, sep="\t")
+
+
+```
+
+
+```{r}
+
+# add more information
+
+LarSco.combined@meta.data
+LarSco.combined@assays$RNA@counts
+
+# Add batch Year
+Year <- rep("2021",ncol(LarSco.combined))
+LarSco.combined <- AddMetaData(LarSco.combined, Year, col.name = "Year")
+
+# Add silking information to metadat
+Silk_status <- rep("NotSilked",ncol(LarSco.combined))
+LarSco.combined <- AddMetaData(LarSco.combined, Silk_status, col.name = "Silk_status")
+
+# Add batch details to meta data
+Batch <- rep("B1",ncol(LarSco.combined))
+LarSco.combined <- AddMetaData(LarSco.combined, Batch, col.name = "Batch")
+
+
+LarSco.combined@meta.data
+##
+```
+
+
+
+# Quality control --- Filter the data 
+
+```{r}
+
+
+##calculate number of gene per UMI / cell and add to metadata
+LarSco.combined$log10GenesPerUmi <- log10(LarSco.combined$nFeature_RNA) / log10(LarSco.combined$nCount_RNA)
+
+
+## Computing percentage and ratio for MT genes
+LarSco.combined$percentMT <- PercentageFeatureSet(LarSco.combined, pattern = '^MT-')
+LarSco.combined$RatioMT <- LarSco.combined@meta.data$percentMT / 100
+
+head(LarSco.combined[[]])
+
+# Visualize QC metrics as a violin plot
+VlnPlot(LarSco.combined, features = c("nFeature_RNA", "nCount_RNA", "percentMT"), ncol = 3)
+
+# visualize nCountRNA-percentMT relationships
+plot1 <- FeatureScatter(LarSco.combined, feature1 = "nFeature_RNA", feature2 = "percentMT")
+plot2 <- FeatureScatter(LarSco.combined, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+```
+
+
+## filter out low quality cells
+
+```{r}
+
+# filter
+LarSco.combined_filtered <- subset(x=LarSco.combined, 
+                                   subset = (nCount_RNA >= 400) & (nCount_RNA < 15000) 
+                                   & (nFeature_RNA >= 300) & (nFeature_RNA < 2000)  & (percentMT < 5)  )
+
+LarSco.combined_filtered@meta.data
+
+
+# save
+
+LarSco_Filtered_dataframe <- data.frame(table(Idents(LarSco.combined_filtered)))
+sample_cellcount_afetrfilter_file <- paste(params$workingDir, params$MinorResultDir, "Samples_cellcount_afterfiltering.txt", sep = '/')
+write.table(LarSco_Filtered_dataframe,
+            file = sample_cellcount_afetrfilter_file, sep="\t")
+
+```
+
+
+## filter lowly expressed genes across the data set
+
+```{r}
+
+
+# First get the expression matrix
+RNAcountsMatrix <- GetAssayData(object = LarSco.combined_filtered, slot = "counts")
+
+# Filtering cells based on genes > 0
+NonZero_RNAcountsMatrix <- RNAcountsMatrix > 0
+
+# Calculate row sums
+cell_genes =  Matrix::rowSums(NonZero_RNAcountsMatrix)
+
+# keeping genes that are expressed in more than 10 number of cells
+keep_genes <- Matrix::rowSums(NonZero_RNAcountsMatrix) >= 10
+
+# Extracting counts
+keep_genes_dataframe <- data.frame(keep_genes)
+
+#write.table(keep_genes_dataframe,file = '~/spidersilk_project/MinorGland/minor_QC_results/Intergrated/filtering_genes_Greater10.txt', sep='\t')
+
+
+keep_genes[grepl(pattern = "MT-", x =names(keep_genes) )] = FALSE 
+
+filtered_RNAcountsMatrix <- RNAcountsMatrix[keep_genes, ]
+
+# Reassigning to filtered seurat object
+LarSco.combined_filtered <- CreateSeuratObject(filtered_RNAcountsMatrix, meta.data = LarSco.combined_filtered@meta.data)
+
+LarSco.combined_filtered@meta.data
+
+VlnPlot(LarSco.combined_filtered, features = c("nFeature_RNA", "nCount_RNA", "percentMT"), group.by = "orig.ident", ncol = 3)
+
+
+# saving filetered seurat object
+saveRDS(LarSco.combined_filtered, file = paste(params$workingDir, params$MinorResultDir, "LarSco.combined_filtered.rds", sep = '/'))
+
+
+```
+
+
+## calculate how many cells and genes do we have after filtering
+
+```{r print_dims_after_filter}
+
+nCells <- dim(LarSco.combined)[2]
+nGenes <- dim(LarSco.combined)[1]
+sprintf("Number of cells before filtering: %s", nCells)
+sprintf("Number of genes before filtering: %s", nGenes)
+
+nCells_filtered <- dim(LarSco.combined_filtered)[2]
+nGenes_filtered <- dim(LarSco.combined_filtered)[1]
+sprintf("Number of cells after filtering: %s", nCells_filtered)
+sprintf("Number of genes after filtering: %s", nGenes_filtered)
+
+
+sprintf("Number of cells that are filtered: %s", nCells - nCells_filtered)
+sprintf("Number of genes that are filtered: %s", nGenes - nGenes_filtered)
+
+```
+
+
+
+# Normalization
+
+```{r}
+
+LarSco.combined_QCfiltered = LarSco.combined_filtered
+
+# “LogNormalize”: normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result
+LarSco.combined_QCfiltered <- NormalizeData(LarSco.combined_QCfiltered, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Normalized values are stored in LarSco.combined_QCfiltered[["RNA"]]@data
+# Visualization
+normalized.data <- LarSco.combined_QCfiltered[["RNA"]]@data
+normalized.data[1:2, 1:4]
+dim(normalized.data)
+
+```
+
+
+
+# Identification of highly variable features (feature selection)
+
+```{r}
+# highly variable features: highly expressed in some cells, and lowly expressed in others
+# Directly modeling the mean-variance relationship inherent in single-cell data
+# By default, we return 2,000 features per dataset. These will be used in downstream analysis, like PCA
+
+
+LarSco.combined_QCfiltered <- FindVariableFeatures(LarSco.combined_QCfiltered, selection.method = "vst", nfeatures = 2000)
+
+# # Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(LarSco.combined_QCfiltered), 10)
+#top10
+
+# plot variable features with and without label
+plot1 <- VariableFeaturePlot(LarSco.combined_QCfiltered)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+
+``` 
+
+
+
+# Scaling the data
+
+```{r}
+# After scaling, for each gene, the mean expression across cells is 0 and the variance across cells is 1
+# This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+
+
+# scaling all genes
+all.genes <- rownames(LarSco.combined_QCfiltered)
+LarSco.combined_QCfiltered <- ScaleData(LarSco.combined_QCfiltered, features = all.genes)
+
+top50 <- head(VariableFeatures(LarSco.combined_QCfiltered), 50)
+
+```
+
+
+
+# Perform linear dimensional reduction
+
+```{r}
+
+# Principal Component Analysis (PCA)
+# set.seed() is used to seed random numbers, a specific seed can produce a specific pseudo-random sequence, the main purpose of this function is to make your simulation repeatable
+LarSco.combined_QCfiltered <- RunPCA(LarSco.combined_QCfiltered, features = VariableFeatures(object = LarSco.combined_QCfiltered), seed.use = 1234)
+
+# Visualization
+
+# VizDimLoadings(LarSco.combined_QCfiltered, dims = 1:2, reduction = "pca")
+
+DimPlot(LarSco.combined_QCfiltered, reduction = "pca", group.by = "orig.ident")+NoAxes()+ggtitle("PCA raw_data")
+ggsave(paste(params$workingDir, params$MinorResultDir, "PCA raw_data.pdf", sep = '/'), width = 10, height = 10)
+
+
+DimPlot(LarSco.combined_QCfiltered, group.by = "Batch", reduction = "pca", pt.size = 1.5)
+DimHeatmap(LarSco.combined_QCfiltered, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(LarSco.combined_QCfiltered, dims = 1:20, cells = 500, balanced = TRUE)
+
+```
+
+
+
+# Determine the ‘dimensionality’ of the dataset
+
+```{r}
+
+LarSco.combined_QCfiltered <- JackStraw(LarSco.combined_QCfiltered, num.replicate = 100)
+LarSco.combined_QCfiltered <- ScoreJackStraw(LarSco.combined_QCfiltered, dims = 1:20)
+
+
+JackStrawPlot(LarSco.combined_QCfiltered, dims = 1:20)
+ggsave(paste(params$workingDir, params$MinorResultDir, "JackStrawPlot.pdf", sep = '/'), width = 10, height = 10)
+
+ElbowPlot(LarSco.combined_QCfiltered)
+ggsave(paste(params$workingDir, params$MinorResultDir, "ElbowPlot.pdf", sep = '/'), width = 10, height = 10)
+
+```
+
+
+
+# Cluster the cells
+
+```{r}
+
+# first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods
+LarSco.combined_QCfiltered <- FindNeighbors(LarSco.combined_QCfiltered, dims = 1:20)
+
+# Group cells together
+
+# Resolution parameter: sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters
+# Setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells
+LarSco.combined_QCfiltered <- FindClusters(LarSco.combined_QCfiltered, resolution = 0.4)
+
+
+# The clusters can be found using the Idents() function.
+# Look at cluster IDs of the first 5 cells
+head(Idents(LarSco.combined_QCfiltered), 5)
+
+```
+
+
+
+# Run non-linear dimensional reduction (UMAP)
+
+```{r}
+
+# UMAP
+# reticulate::py_install(packages = 'umap-learn')
+LarSco.combined_QCfiltered <- RunUMAP(LarSco.combined_QCfiltered, dims = 1:20, seed.use = 1234)
+LarSco.combined_QCfiltered <- RunTSNE(LarSco.combined_QCfiltered, dims = 1:20)
+
+# Visualization
+DimPlot(LarSco.combined_QCfiltered, reduction = "umap", group.by = "seurat_clusters" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "umap_1.pdf", sep = '/'), width = 10, height = 10)
+
+DimPlot(LarSco.combined_QCfiltered, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "umap_2.pdf", sep = '/'), width = 10, height = 10)
+
+DimPlot(LarSco.combined_QCfiltered, reduction = "umap", group.by = "Batch" , label = TRUE, label.size = 5)
+
+
+```
+
+
+```{r}
+# saving QC filetered seurat object
+saveRDS(LarSco.combined_QCfiltered, file = paste(params$workingDir, params$MinorResultDir, "LarSco.combined_QCfiltered.rds", sep = '/'))
+
+
+```
+
+######################################################
+
+# Integrate
+
+## Read filtered RDS file
+
+```{r}
+
+LarSco.combined_filtered <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "LarSco.combined_filtered.rds", sep = '/'))
+
+```
+
+## FindIntegrationAnchors
+
+```{r}
+
+# Integration through FindIntegrationAnchors
+
+LarSco.combined_filtered.list <- SplitObject(LarSco.combined_filtered, split.by = "orig.ident")
+
+# normalize and identify variable features for each dataset independently
+LarSco.combined_filtered.list <- lapply(X = LarSco.combined_filtered.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each dataset using these features
+features <- SelectIntegrationFeatures(object.list = LarSco.combined_filtered.list)
+write.table(features, file = paste(params$workingDir, params$MinorResultDir, "integration/Integrate_features.txt", sep = "/"))
+
+# add important marker genes to the features
+Minor_All_Markers <- read_tsv(paste(params$workingDir, params$MinorResultDir, "integration/allmarkers_join_geneinfo.tsv", sep = "/"))
+top5.Minor_All_Markers <- Minor_All_Markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+top5.Minor_All_Markers_Gene <- top5.Minor_All_Markers$gene
+New_features <- unique(c(features, top5.Minor_All_Markers_Gene))
+write.table(New_features, 
+            file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Integrate_features_add_Markers.txt", sep = "/"))
+
+LarSco.combined_filtered.list <- lapply(X = LarSco.combined_filtered.list, FUN = function(x) {
+    x <- ScaleData(x, features = New_features, verbose = FALSE)
+    x <- RunPCA(x, features = New_features, verbose = FALSE)
+})
+
+# create an 'integrated' data assay
+LarSco.combined_filtered.anchors <- FindIntegrationAnchors(object.list = LarSco.combined_filtered.list, anchor.features = New_features,
+                                                           reduction = "rpca", k.anchor = 70)
+saveRDS(LarSco.combined_filtered.anchors, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_integration.anchors.rds", sep = "/"))
+
+
+LarSco.combined_filtered.int <- IntegrateData(anchorset = LarSco.combined_filtered.anchors)
+saveRDS(LarSco.combined_filtered.int, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/LarSco.combined_filtered.int.rds", sep = "/"))
+
+```
+
+
+
+```{r}
+LarSco.combined_filtered.int <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/LarSco.combined_filtered.int.rds", sep = '/'))
+DefaultAssay(LarSco.combined_filtered.int) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+LarSco.combined_filtered.int <- ScaleData(LarSco.combined_filtered.int, verbose = FALSE)
+LarSco.combined_filtered.int <- RunPCA(LarSco.combined_filtered.int, npcs = 20, verbose = FALSE)
+LarSco.combined_filtered.int <- RunUMAP(LarSco.combined_filtered.int, reduction = "pca", dims = 1:20)
+LarSco.combined_filtered.int <- RunTSNE(LarSco.combined_filtered.int, dims = 1:20)
+
+LarSco.combined_filtered.int <- FindNeighbors(LarSco.combined_filtered.int, reduction = "pca", dims = 1:20)
+LarSco.combined_filtered.int <- FindClusters(LarSco.combined_filtered.int, resolution = 0.4)
+
+# Visualization
+p1 <- DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(LarSco.combined_filtered.int, reduction = "umap", label = TRUE, repel = TRUE)    
+p1 + p2
+
+```
+
+```{r}
+# Visualization
+DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "seurat_clusters" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes","sample_int_umap_1.pdf", sep = '/'), width = 10, height = 10)
+
+DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "sample_int_umap_2.pdf", sep = '/'), width = 10, height = 10)
+
+DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "Batch" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes","sample_int_umap_3.pdf", sep = '/'), width = 10, height = 10)
+
+```
+
+
+```{r}
+
+# Save
+integrated_RDSfile <- paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "LarSco.combined_filtered.int.rds", sep = '/')
+saveRDS(LarSco.combined_filtered.int, file = integrated_RDSfile)
+
+```
+
+
+# Check the resolution
+```{r}
+LarSco.combined_filtered.int@meta.data
+names(LarSco.combined_filtered.int@graphs)
+
+for (res in c( 0.3, 0.4 , 0.5 , 0.6 )){
+  LarSco.combined_filtered.int <- FindClusters(LarSco.combined_filtered.int, graph.name = "integrated_snn", resolution = res, algorithm = 1)
+}
+
+LarSco.combined_filtered.int <- readRDS(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "LarSco.combined_filtered.int.rds", sep = '/'))
+plot_grid(ncol = 4,
+  DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "integrated_snn_res.0.3")+ggtitle("louvain_0.3"),
+  DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "integrated_snn_res.0.4")+ggtitle("louvain_0.4"),
+  DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "integrated_snn_res.0.5")+ggtitle("louvain_0.5"),
+  DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "integrated_snn_res.0.6")+ggtitle("louvain_0.6")
+  )
+
+clustree(LarSco.combined_filtered.int@meta.data, prefix = "integrated_snn_res.")
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "Clustree.pdf", sep = '/'), width = 10, height = 10)
+# choose resolution = 0.4
+LarSco.combined_filtered.int <- FindClusters(LarSco.combined_filtered.int, graph.name = "integrated_snn", resolution = 0.4, algorithm = 1)
+# Save
+saveRDS(LarSco.combined_filtered.int, file = paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "LarSco.combined_filtered.int.rds", sep = '/'))
+
+```
+
+
+# visualisation of the different clusters
+```{r}
+
+LarSco.combined_filtered.int@meta.data
+DefaultAssay(LarSco.combined_filtered.int) <- "integrated"
+
+LarSco.combined_filtered.int <- FindClusters(LarSco.combined_filtered.int, resolution = 0.4)
+umap = DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "seurat_clusters", label = TRUE )
+F_minor <- FeaturePlot( LarSco.combined_filtered.int, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2',  'obst-e-5'))
+F_minor_1 <- FeaturePlot( LarSco.combined_filtered.int, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd'), split.by = "orig.ident")
+
+# visualisation based on Batch
+
+GB1_batch = LarSco.combined_filtered.int@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = Batch)) +
+  geom_bar()+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+GB2_batch = LarSco.combined_filtered.int@meta.data %>% 
+  ggplot(aes(seurat_clusters, fill = Batch)) +
+  geom_bar( position = "fill")+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+LarSco.combined_filtered.int@meta.data$expression = "low"
+LarSco.combined_filtered.int@meta.data$expression[LarSco.combined_filtered.int@meta.data$nCount_RNA > 1000] = "medium"
+LarSco.combined_filtered.int@meta.data$expression[LarSco.combined_filtered.int@meta.data$nCount_RNA > 4000] = "high"
+
+GB1_batch_expression = LarSco.combined_filtered.int@meta.data %>% ggplot(aes(seurat_clusters, fill = expression)) + geom_bar()+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+GB2_batch_expression = LarSco.combined_filtered.int@meta.data %>% ggplot(aes(seurat_clusters, fill = expression)) + geom_bar( position = "fill")+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+D1 = DimPlot(LarSco.combined_filtered.int, group.by="seurat_clusters",  split.by =  c("Batch"), ncol=3, label = TRUE ) +NoAxes() + theme(legend.position = "none")
+
+
+# show figure
+umap_without_legend = umap + theme(legend.position = "none")
+(umap_without_legend + D1) / (GB1_batch + GB1_batch_expression) / (GB2_batch + GB2_batch_expression)
+
+# save figure
+ggsave("../../data/scRNA/minorGland/cells_distribution_among_clusters_batch.pdf", width = 20, height = 20)
+
+
+```
+
+
+
+```{r}
+LarSco.combined_filtered.int <- readRDS(file = paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "LarSco.combined_filtered.int.rds", sep = '/'))
+
+source("colorSchemes.R")
+AmpullateColors_2 <- AmpullateColors_2()
+
+
+# visualisation based on samples
+GB1_ident = LarSco.combined_filtered.int@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar()+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+GB2_ident = LarSco.combined_filtered.int@meta.data %>% 
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar( position = "fill")+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+GB1 = LarSco.combined_filtered.int@meta.data %>% ggplot(aes(Batch, fill = orig.ident)) + geom_bar()+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# show figure
+(GB1_ident + GB2_ident) / (GB1 + umap)
+GB1_ident + umap
+# save figure
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "cells_distribution_among_clusters_samples.pdf", sep = '/'), GB1_ident + umap, width = 10, height = 5)
+
+# add colors
+GB1_ident_cols = LarSco.combined_filtered.int@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar(identity = "fill") + 
+  scale_fill_manual(values = AmpullateColors_2) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+Dim_1 <- DimPlot(LarSco.combined_filtered.int, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5, cols = AmpullateColors_2)
+
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "GB1_ident_cols.pdf", sep = '/'), GB1_ident_cols)
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes", "Dim_1.pdf", sep = '/'), Dim_1)
+
+```
+

@@ -1,0 +1,116 @@
+---
+title: "single cell types analysis for Minor gland"
+author: "Wenqing Chen"
+date: "11/09/2022"
+
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+    df_print: paged
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  repositoryPath: ~/git/spidersilk
+  geneInfo: Rscripts/loadGeneInfo.R
+
+---
+
+```{r setup, include=FALSE}
+
+# install.packages('ape')
+# BiocManager::install("ComplexHeatmap")
+
+library(Seurat)
+
+library(tidyverse)
+
+library(ComplexHeatmap)
+
+```
+
+# Load Seurat object
+```{r load RDS object}
+
+LarSco.combined_filtered.int <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/LarSco.combined_filtered.int.rds", sep = "/"))
+
+```
+
+# Load GeneInfo
+
+```{r load geneInfo}
+
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+
+```
+
+
+# Find markers
+
+## FindAllMarkers
+
+
+```{r}
+
+
+DefaultAssay(LarSco.combined_filtered.int) <- "RNA"
+LarSco.combined_filtered.int <- FindClusters(LarSco.combined_filtered.int, graph.name = "integrated_snn", resolution = 0.4, algorithm = 1)
+table(LarSco.combined_filtered.int@active.ident)
+LarSco.combined_filtered.int@meta.data
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+find_all_markers_result <- FindAllMarkers(LarSco.combined_filtered.int, only.pos = TRUE, min.pct = 0.1)
+
+
+# select top 5 markers
+top5.markers <- find_all_markers_result %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+#write.table(scGeneInfo, file = "~/spidersilk_project/MinorGland/minor_Celltype_results/integration/top5_markers.tsv", row.names = F, sep="\t")
+
+p1 <- DotPlot(LarSco.combined_filtered.int, features = rev(as.character(unique(top5.markers$gene))),
+    assay = "RNA") + coord_flip()
+
+# select top 1 markers
+top1.markers <- top5.markers %>% filter(avg_log2FC == max(avg_log2FC))
+
+
+# create a scale.data slot for the selected genes
+LarSco.combined_filtered.int <- ScaleData(LarSco.combined_filtered.int, features = as.character(unique(top5.markers$gene)), assay = "RNA")
+
+p2 <- FeaturePlot(LarSco.combined_filtered.int, top1.markers$gene)
+p3 <- DoHeatmap(LarSco.combined_filtered.int, top5.markers$gene)
+p4 <- VlnPlot(LarSco.combined_filtered.int, features = as.character(unique(top1.markers$gene)), ncol = 5, assay = "RNA", pt.size = 0)
+p2
+p3
+p4
+
+# save
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/top5_findallmarkers.Dot.pdf", sep = "/"), width = 20, height = 20 , p1)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/top1_findallmarkers.FP.pdf", sep = "/"), width = 20, height = 20 , p2)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/top5_findallmarkers.HM.png", sep = "/"), width = 40, height = 20 , p3)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/top1_findallmarkers.Vln.pdf", sep = "/"), width = 25, height = 15 , p4)
+
+```
+
+```{r}
+find_all_markers_result
+geneInfo
+```
+
+
+
+```{r}
+
+allmarkers_join_geneinfo <- find_all_markers_result %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+
+# save
+write_tsv(x = allmarkers_join_geneinfo, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/allmarkers_join_geneinfo.tsv", sep = "/"))
+
+
+```

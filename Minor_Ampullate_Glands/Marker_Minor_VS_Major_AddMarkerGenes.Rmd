@@ -1,0 +1,348 @@
+---
+title: "Minor_marker_VS_Major_marker"
+author: "Wenqing Chen"
+date: "2022-12-01"
+
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+    df_print: paged
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  repositoryPath: ~/git/spidersilk
+  majormarker: annotation/scRNA/Major/Markers.SCT_snn_res.0.2.all.scv
+  submajormarker: results/scRNA/majorGland/major.glandSpecific.csv
+
+---
+
+# library
+```{r}
+
+library(tidyverse)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+
+```
+
+# all major markers
+## load markers file
+```{r}
+
+minor_marker <- read_tsv(file = paste(params$workingDir, params$MinorResultDir, 
+                                      "integration_add_MarkerGenes/allmarkers_join_geneinfo.tsv", sep = "/"))
+major_marker <- read_csv(file = paste(params$repositoryPath, params$majormarker, sep = "/"))
+major_marker <- as.data.frame(major_marker)
+
+major_marker_1 <- major_marker[, c("X", "cluster", "p_val", "avg_log2FC", "pct.1", "pct.2", "p_val_adj", "Chr", "Start", "End", "product")]
+
+unique(minor_marker$cluster)
+
+```
+
+
+## all markers analysis
+```{r}
+
+marker_minor_vs_major <- left_join(x = minor_marker, y = major_marker_1, by = c("gene" = "X")) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+
+# save
+write_tsv(x = marker_minor_vs_major, file = paste(params$workingDir, params$MinorResultDir, 
+                                                  "integration_add_MarkerGenes/all_marker_minor_vs_major.tsv", sep = "/"))
+
+marker_minor_vs_major_diff <- filter(marker_minor_vs_major, is.na(cluster.major))
+
+# save
+write_tsv(x = marker_minor_vs_major_diff, file = paste(params$workingDir, params$MinorResultDir, 
+                                                  "integration_add_MarkerGenes/all_marker_minor_vs_major_diff.tsv", sep = "/"))
+
+
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0:max(unique(minor_marker$cluster)))){
+  df_1 <- marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11","12", "14", "15", "16", "17", "18", "19", "22", "23")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "color key",
+              #cluster_rows = FALSE, cluster_columns = FALSE,
+              show_row_dend = F, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'major - cluster', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'minor - cluster', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 50, 100, 150), c("sky blue", "pink", "purple", "blue")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+ha1 <- rowAnnotation('sums' = anno_barplot(df_same_sum, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "orange"),
+                                           axis_param = list(side = "top", at = c(0, 300, 600, 900),
+                                                             labels = c("0", "300", "600", "900"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 75),
+                                                             labels = c("0", "80"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+h1 + ha1 + ha2
+
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/ALL_Marker_minorVSmajor.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+```
+
+
+
+
+## Top 25 markers analysis
+```{r}
+
+top25.minor_markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 25, order_by = avg_log2FC)
+top25.major_markers <- major_marker_1 %>%
+    group_by(cluster) %>%
+    slice_max(n = 25, order_by = avg_log2FC)
+
+
+top25.marker_minor_vs_major <- left_join(x = top25.minor_markers, y = top25.major_markers, by = c("gene" = "X"), all.x = TRUE) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+
+marker_minor_vs_major_diff <- filter(top25.marker_minor_vs_major, is.na(cluster.major))
+
+
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0:max(unique(minor_marker$cluster)))){
+  df_1 <- top25.marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c("0", "1", "2", "3", "5", "7", "8", "9", "10", "11", "12", "14", "16")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "color key",
+              #cluster_rows = FALSE, cluster_columns = FALSE,
+              show_row_dend = F, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'major - cluster', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'minor - cluster', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+ha1 <- rowAnnotation('sums' = anno_barplot(df_same_sum, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "orange"),
+                                           axis_param = list(side = "top", at = c(0, 25, 300, 600, 900),
+                                                             labels = c("0", "25"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50),
+                                                             labels = c("0","25", "50"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+h1 + ha1 + ha2
+
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/ALL_Top25_Marker_minorVSmajor.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+```
+
+
+## Top 50 markers analysis
+```{r}
+
+top50.minor_markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+top50.major_markers <- major_marker_1 %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+
+
+top50.marker_minor_vs_major <- left_join(x = top50.minor_markers, y = top50.major_markers, by = c("gene" = "X")) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+
+marker_minor_vs_major_diff <- filter(top50.marker_minor_vs_major, is.na(cluster.major))
+
+
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0:max(unique(minor_marker$cluster)))){
+  df_1 <- top50.marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c("0", "1", "2", "3", "5", "7", "8", "9", "10", "11", "12", "14", "15", "16", "19", "22")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "color key",
+              #cluster_rows = FALSE, cluster_columns = FALSE,
+              show_row_dend = F, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'major - cluster', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'minor - cluster', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+ha1 <- rowAnnotation('sums' = anno_barplot(df_same_sum, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "orange"),
+                                           axis_param = list(side = "top", at = c(0, 300, 600, 900),
+                                                             labels = c("0", "25"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 75, 150, 225),
+                                                             labels = c("0","25"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+h1 + ha1 + ha2
+
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/ALL_Top50_Marker_minorVSmajor.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+```
+
+# specific major markers
+
+## load markers file
+```{r}
+minor_marker <- read_tsv(file = paste(params$workingDir, params$MinorResultDir, 
+                                      "integration_add_MarkerGenes/allmarkers_join_geneinfo.tsv", sep = "/"))
+major_marker <- read_csv(file = paste(params$repositoryPath, params$submajormarker, sep = "/"))
+
+```
+
+```{r}
+
+source("colorSchemes.R")
+MajorColors_3 <- MajorColors_3()
+
+```
+
+
+## Top 50 markers analysis
+```{r}
+
+top50.minor_markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+top50.major_markers <- major_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+
+
+top50.marker_minor_vs_major <- left_join(x = top50.minor_markers, y = top50.major_markers, by = c("gene" = "gene")) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+# save
+write_tsv(x = top50.marker_minor_vs_major, file = paste(params$workingDir, params$MinorResultDir,                                                "integration_add_MarkerGenes/sub_marker_minor_vs_major.tsv", sep = "/"))
+
+marker_minor_vs_major_diff <- filter(top50.marker_minor_vs_major, is.na(cluster.major))
+# save
+write_tsv(x = marker_minor_vs_major_diff, file = paste(params$workingDir, params$MinorResultDir,                                       "integration_add_MarkerGenes/sub_marker_minor_vs_major_diff.tsv", sep = "/"))
+
+marker_minor_vs_major_same <- filter(top50.marker_minor_vs_major, !is.na(cluster.major))
+# save
+write_tsv(x = marker_minor_vs_major_same, file = paste(params$workingDir, params$MinorResultDir,                                "integration_add_MarkerGenes/sub_marker_minor_vs_major_same.tsv", sep = "/"))
+
+
+
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0:max(unique(minor_marker$cluster)))){
+  df_1 <- top50.marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c( "0", "1", "7", "4", "2", "5", "3", "6", "8")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+######
+
+#colnames(df_wide_same)[1:9] <- paste0("Major_", colnames(df_wide_same))
+#rownames(df_wide_same)[1:23] <- paste0("Minor_", rownames(df_wide_same))
+
+h1 <- Heatmap(as.matrix(df_wide_same),
+              name = "Expression",
+              cluster_columns = FALSE,
+              show_row_dend = F, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'Major - Clusters', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'Minor - Clusters', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+}, column_order = c( "0", "1", "7", "4", "2", "5", "3", "6", "8"), top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(fill = MajorColors_3, col = NA), labels = c("Sac", "Tail", "Duct"), labels_gp = gpar(col = "black"))), column_km = 3)
+
+
+h1
+
+ha1 <- rowAnnotation('sums' = anno_barplot(df_same_sum, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "orange"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50, 75),
+                                                             labels = c("0", "25", "50", "75"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50, 75),
+                                                             labels = c("0","25", "50", "75"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+h1 + ha1 + ha2
+
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Sub_Top50_Marker_minorVSmajor_2.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+```

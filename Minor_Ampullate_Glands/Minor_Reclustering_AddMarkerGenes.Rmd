@@ -1,0 +1,1333 @@
+---
+title: "Clustering"
+author: "Wenqing Chen"
+date: "2023-02-22"
+output: html_document
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  majorresult: results/MajorGland
+  ampullateresult: results/AmpullateGland
+  cell2location: results/MinorGland/integration_add_MarkerGenes/Cell2Location
+  repositoryPath: ~/git/spidersilk
+  geneInfo: Rscripts/loadGeneInfo.R
+  submajormarker: results/scRNA/majorGland/major.glandSpecific.csv
+  
+  
+---
+
+# library
+```{r setup, include=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(dplyr) 
+library(cowplot)
+library(ggplot2)
+library(pheatmap)
+library(rafalib)
+library(ggraph)
+library(clustree)
+library(ComplexHeatmap)
+library(circlize)
+
+```
+
+# load data
+```{r}
+
+Minor_integration <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/all_minor_scRNA_annot.rds", sep = "/"))
+Minor_integration@assays
+Minor_integration@meta.data
+
+```
+
+# get anchors data
+```{r}
+# Just run one followed by saving anchors data file
+DefaultAssay(Minor_integration) <- "RNA"
+# Integration through FindIntegrationAnchors
+
+Minor_integration.list <- SplitObject(Minor_integration, split.by = "orig.ident")
+
+# normalize and identify variable features for each dataset independently
+Minor_integration.list <- lapply(X = Minor_integration.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each dataset using these features
+features <- SelectIntegrationFeatures(object.list = Minor_integration.list)
+# add important marker genes to the features
+Minor_All_Markers <- read_tsv(paste(params$workingDir, params$MinorResultDir, "integration/allmarkers_join_geneinfo.tsv", sep = "/"))
+top5.Minor_All_Markers <- Minor_All_Markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+top5.Minor_All_Markers_Gene <- top5.Minor_All_Markers$gene
+New_features <- unique(c(features, top5.Minor_All_Markers_Gene))
+
+Minor_integration.list <- lapply(X = Minor_integration.list, FUN = function(x) {
+    x <- ScaleData(x, features = New_features, verbose = FALSE)
+    x <- RunPCA(x, features = New_features, verbose = FALSE)
+})
+
+# create an 'integrated' data assay
+Minor_integration.anchors <- FindIntegrationAnchors(object.list = Minor_integration.list, anchor.features = New_features,
+                                                           reduction = "rpca", k.anchor = 70)
+saveRDS(Minor_integration.anchors, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_integration.anchors.rds", sep = "/"))
+
+```
+
+# integrate anchors data
+```{r}
+
+# load anchors file
+Minor_integration.anchors <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_integration.anchors.rds", sep = "/"))
+Minor_integration <- IntegrateData(anchorset = Minor_integration.anchors, new.assay.name = "Recluster")
+Minor_integration@assays
+saveRDS(Minor_integration, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_minor_scRNA_annot_recluster.rds", sep = "/"))
+
+```
+
+# Annotated clusters
+## Find clusters
+```{r}
+Minor_integration <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_minor_scRNA_annot_recluster.rds", sep = "/"))
+Minor_recluster <- subset(Minor_integration, subset = celltype != 'unsure')
+Minor_recluster@assays
+
+DefaultAssay(Minor_recluster) <- "Recluster"
+
+
+Minor_recluster <- ScaleData(Minor_recluster, verbose = FALSE)
+Minor_recluster <- RunPCA(Minor_recluster, npcs = 20, verbose = FALSE)
+Minor_recluster <- RunUMAP(Minor_recluster, reduction = "pca", dims = 1:20)
+
+Minor_recluster <- FindNeighbors(Minor_recluster, dims = 1:20)
+Minor_recluster <- FindClusters(Minor_recluster, resolution = 0.1)
+Minor_recluster <- FindClusters(Minor_recluster, resolution = 0.15)
+Minor_recluster <- FindClusters(Minor_recluster, resolution = 0.2)
+
+
+Minor_recluster@meta.data
+
+Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster.rds", sep = "/"))
+# Visualization
+DimPlot(Minor_recluster, reduction = "umap", group.by = "Recluster_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Minor_recluster, reduction = "umap", group.by = "Recluster_snn_res.0.15" , label = TRUE, label.size = 5)
+DimPlot(Minor_recluster, reduction = "umap", group.by = "Recluster_snn_res.0.2" , label = TRUE, label.size = 5)
+
+
+DimPlot(Minor_recluster, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_umap_2.pdf", sep = '/'), width = 10, height = 10)
+
+
+
+Minor_recluster <- JackStraw(Minor_recluster, num.replicate = 100, dims = 20)
+Minor_recluster <- ScoreJackStraw(Minor_recluster, dims = 1:20)
+
+JackStrawPlot(Minor_recluster, dims = 1:20)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/JackStrawPlot.pdf", sep = '/'), width = 10, height = 10)
+
+ElbowPlot(Minor_recluster, ndims = 20)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/ElbowPlot.pdf", sep = '/'), width = 10, height = 10)
+
+
+```
+
+```{r}
+
+clustree <- clustree(Minor_recluster@meta.data, prefix = "Recluster_snn_res.")
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Clustree_recluster.pdf", sep = '/'), clustree, width = 10, height = 10)
+# choose resolution = 0.15
+Minor_recluster <- FindClusters(Minor_recluster, resolution = 0.15)
+
+```
+
+
+## Save RDS file
+```{r}
+
+saveRDS(Minor_recluster, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster.rds", sep = "/"))
+
+```
+
+
+## Find all markers
+```{r}
+
+DefaultAssay(Minor_recluster) <- "Recluster"
+
+table(Minor_recluster@active.ident)
+Minor_recluster@meta.data
+Minor_recluster <- FindClusters(Minor_recluster, resolution = 0.15)
+DimPlot(Minor_recluster, reduction = "umap", group.by = "Recluster_snn_res.0.15" , label = TRUE, label.size = 5)
+
+# remove small clusters
+sub_Minor_recluster <- subset(Minor_recluster, subset = Recluster_snn_res.0.15 != "6" )
+saveRDS(sub_Minor_recluster, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_Minor_recluster.rds", sep = "/"))
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+find_all_markers_result <- FindAllMarkers(sub_Minor_recluster, assay = "Recluster", only.pos = TRUE, min.pct = 0.1)
+
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+
+allmarkers_join_geneinfo <- find_all_markers_result %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+
+# save
+write_tsv(x = allmarkers_join_geneinfo, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_allmarkers_join_geneinfo_0.15.tsv", sep = "/"))
+
+```
+
+
+## Minor Markers VS Major
+### load markers file
+```{r}
+
+sub_Minor_recluster <- readRDS( file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_Minor_recluster.rds", sep = "/"))
+
+minor_marker <- read_tsv(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_allmarkers_join_geneinfo_0.15.tsv", sep = "/"))
+
+major_marker <- read_csv(file = "~/Box/bridgeSpider/deconvolution/markers_integrated_snn_res.0.2.csv")
+
+major_marker <- subset(major_marker, subset = cluster != 8)
+
+minor_marker <- minor_marker %>% distinct() %>%
+  filter(avg_log2FC > 1) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+
+major_marker <- major_marker %>% distinct() %>%
+  filter(avg_log2FC > log2(1.5)) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+
+```
+
+
+```{r}
+unique(minor_marker$cluster)
+# select top 5 markers
+top5.markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+
+p1 <- DotPlot(sub_Minor_recluster, features = rev(as.character(unique(top5.markers$gene))),
+    assay = "Recluster") + coord_flip()
+p1
+
+# select top 1 markers
+top1.markers <- top5.markers %>% filter(avg_log2FC == max(avg_log2FC))
+p2 <- DotPlot(sub_Minor_recluster, features = rev(as.character(unique(top1.markers$gene))),
+    assay = "Recluster") + coord_flip()
+p2
+
+```
+
+
+### Top 50 markers analysis
+```{r}
+
+top50.minor_markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+top50.major_markers <- major_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+
+
+top50.marker_minor_vs_major <- left_join(x = top50.minor_markers, y = top50.major_markers, join_by(gene == gene)) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+# # save
+# write_tsv(x = top50.marker_minor_vs_major, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major.tsv", sep = "/"))
+
+marker_minor_vs_major_diff <- filter(top50.marker_minor_vs_major, is.na(cluster.major))
+# # save
+# write_tsv(x = marker_minor_vs_major_diff, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major_diff.tsv", sep = "/"))
+
+marker_minor_vs_major_same <- filter(top50.marker_minor_vs_major, !is.na(cluster.major))
+# # save
+# write_tsv(x = marker_minor_vs_major_same, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major_same.tsv", sep = "/"))
+
+
+
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0:max(unique(minor_marker$cluster)))){
+  df_1 <- top50.marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c( "0","1","7","3", "6", "4", "2", "5")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "Expression",
+              cluster_columns = FALSE,
+              show_row_dend = FALSE, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'major - cluster', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'minor - cluster', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "Expression",
+              cluster_columns = FALSE,
+              show_row_dend = FALSE, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50, 75),
+                                                             labels = c("0","25", "50", "75"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+
+h1 + ha1 + ha2
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_Top50_Marker_minorVSmajor.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+DimPlot(sub_Minor_recluster, reduction = "umap", group.by = "Recluster_snn_res.0.15" , label = TRUE, label.size = 5)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_umap_1.pdf", sep = '/'), width = 10, height = 10)
+
+```
+
+## annotation
+```{r}
+
+sub_Minor_recluster <- readRDS( file =  paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_Minor_recluster.rds", sep = "/"))
+sub_Minor_recluster@meta.data
+# add celltypes
+celltype <- rep("unsure",ncol(sub_Minor_recluster))
+
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "0"] <- "Minor_Tail_0"
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "4"] <- "Minor_Tail_4"
+
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "3"] <- "Minor_Sac_3"
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "5"] <- "Minor_Sac_5"
+
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "1"] <- "Minor_Duct_1"
+celltype[sub_Minor_recluster$Recluster_snn_res.0.15 == "2"] <- "Minor_Duct_2"
+
+
+sub_Minor_recluster <- AddMetaData(sub_Minor_recluster, celltype, col.name = "Recluster_celltype")
+sub_Minor_recluster@meta.data
+
+
+# add minor gland parts
+MinorGland <- rep("unsure",ncol(sub_Minor_recluster))
+
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "0"] <- "Minor_Tail"
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "4"] <- "Minor_Tail"
+
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "3"] <- "Minor_Sac"
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "5"] <- "Minor_Sac"
+
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "1"] <- "Minor_Duct"
+MinorGland[sub_Minor_recluster$Recluster_snn_res.0.15 == "2"] <- "Minor_Duct"
+
+sub_Minor_recluster <- AddMetaData(sub_Minor_recluster, MinorGland, col.name = "Recluster_GlandsPart")
+
+sub_Minor_recluster$GlandType <- "Minor"
+sub_Minor_recluster$CellTypes <- gsub("Minor_", "", sub_Minor_recluster$Recluster_celltype)
+
+saveRDS(sub_Minor_recluster, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+
+celltype_info <- sub_Minor_recluster@meta.data
+
+celltype_info <- celltype_info[, c("celltype", "Recluster_celltype", "GlandsPart", "Recluster_GlandsPart")]
+
+celltype_diff <- subset(celltype_info, subset = paste("Minor_", celltype_info$GlandsPart, sep = "") != celltype_info$Recluster_GlandsPart)
+
+```
+
+## plot
+
+```{r}
+source("colorSchemes.R")
+MinorCelltypes_2 <- MinorCelltypes_2()
+```
+
+
+```{r}
+
+# Minor ampullate gland
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "Recluster"
+
+Dim_minor_1 <- DimPlot(sub_Minor_recluster, reduction = "umap", group.by = "Recluster_celltype" , label = TRUE, label.size = 5)
+Dim_minor_2 <- DimPlot(sub_Minor_recluster, reduction = "umap", group.by = "Recluster_GlandsPart" , label = TRUE, label.size = 5)
+Dim_minor_3 <- DimPlot(sub_Minor_recluster, reduction = "umap", group.by = "CellTypes", label = TRUE, label.size = 5, cols = MinorCelltypes_2)
+
+F_minor <- FeaturePlot( sub_Minor_recluster, features = c('MiSpa', 'MiSpb', 'MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2',  'obst-e-5'))
+Dim_minor_1 + F_minor
+
+V_minor <- VlnPlot(sub_Minor_recluster, features = c('MiSpa', 'MiSpb', 'MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2'), pt.size = 0, group.by = 'Recluster_celltype')
+
+sub_Minor_recluster <- ScaleData(sub_Minor_recluster, features = c('MiSpa', 'MiSpb', 'MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2',  'obst-e-5'), assay = "Recluster")
+H_minor <- DoHeatmap(sub_Minor_recluster, features = c('MiSpa', 'MiSpb', 'MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2',  'obst-e-5'), raster = F, group.colors = "Recluster_celltype")
+
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes/sub_Minor_recluster_umap.res.0.15.pdf", sep = '/'), width = 7, height = 5, Dim_minor_1)
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes/sub_Minor_recluster_umap.res.0.15_3.pdf", sep = '/'), width = 7, height = 5, Dim_minor_3)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Feature_minor_res.0.15.pdf", sep = '/'), width = 25, height = 10, Dim_minor_1 + F_minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Violin_minor_res.0.15.pdf", sep = '/'), width = 15, height = 10, V_minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Heatmap_minor_res.0.15.pdf", sep = '/'), H_minor)
+
+# major ampullate gland
+major_data <- readRDS("~/Box/bridgeSpider/scRNA/LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds")
+unique(major_data@meta.data$seurat_clusters)
+unique(major_data@meta.data$orig.ident)
+unique(major_data@meta.data$Major)
+
+Dim_major <- DimPlot(major_data, reduction = "umap", group.by = "Major" , label = TRUE, label.size = 5)
+F_major <- FeaturePlot( major_data, features = c('MaSp2e', 'MaSp2a', 'MaSp2b', 'MaSp1a', 'MaSp1b', 'MaSp3a', 'spa','Spidroin3', 'LASC013229', 'xync','pnliprp1' ,'obst-e-2',  'obst-e-5'))
+Dim_major + F_major
+
+V_major <- VlnPlot(major_data, features = c('MaSp2e', 'MaSp2a', 'MaSp2b', 'MaSp1a', 'MaSp1b', 'MaSp3a', 'spa','Spidroin3', 'LASC013229', 'xync','pnliprp1' ,'obst-e-2',  'obst-e-5'), pt.size = 0)
+
+ggsave(paste(params$workingDir, params$majorresult, "Feature_major_res.0.2.pdf", sep = '/'), width = 20, height = 10, Dim_major + F_major)
+ggsave(paste(params$workingDir, params$majorresult, "Violin_major_res.0.2.pdf", sep = '/'), width = 15, height = 10, V_major)
+
+# major ampullate glands -- other parts
+major_data_2 <- readRDS("~/Box/bridgeSpider/scRNA/LarSco.combined_filtered.integrated.Other.SCT.rds")
+major_data_2@meta.data
+DimPlot(major_data_2, group.by = "integrated_snn_res.0.15")
+
+```
+
+## violin plot for all genes
+
+```{r}
+
+# Minor ampullate gland
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "Recluster"
+Idents(sub_Minor_recluster) <- unique(sub_Minor_recluster$Recluster_celltype)
+levels(sub_Minor_recluster)
+i = 5
+for ( i in 0 : max(unique(top50.minor_markers$cluster)) ) {
+  Minor <- VlnPlot(sub_Minor_recluster, features = (top50.minor_markers$gene)[ (i*50+1) : ((i+1)*50) ], pt.size = 0, group.by = "Recluster_celltype")
+  ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/violin", paste("Minor_cluster", i, "res.0.15.pdf", sep = "_"), sep = '/'), width = 20, height = 40, Minor)
+}
+
+
+# major ampullate gland
+Major_data <- readRDS(paste(params$workingDir, params$majorresult, "LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds",sep = "/"))
+DefaultAssay(Major_data) <- "RNA"
+levels(Major_data)
+for ( i in 0 : max(unique(top50.minor_markers$cluster)) ) {
+  Major <- VlnPlot(Major_data, features = (top50.minor_markers$gene)[ (i*50+1) : ((i+1)*50) ], pt.size = 0)
+  ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/violin", paste("Major_cluster", i, "res.0.2.pdf", sep = "_"), sep = '/'), width = 20, height = 40, Major)
+}
+
+
+```
+
+
+```{r}
+
+
+# Minor ampullate gland
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "Recluster"
+sub_Minor_recluster@meta.data
+
+exprs_minor <- data.frame(FetchData(object = sub_Minor_recluster, vars = unique(rownames(sub_Minor_recluster))))
+exprs_minor$cellID <- rownames(exprs_minor)
+
+celltype_minor <- FetchData(sub_Minor_recluster, "Recluster_celltype")
+celltype_minor$cellID <- rownames(celltype_minor)
+
+Minor_expression <- merge(exprs_minor, celltype_minor, by = "cellID")
+
+# major ampullate gland
+Major_data <- readRDS(paste(params$workingDir, params$majorresult, "LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds",sep = "/"))
+DefaultAssay(Major_data) <- "RNA"
+
+celltype <- rep("unsure",ncol(Major_data))
+
+celltype[Major_data$Major == "Tail_2"] <- "Major_Tail_Spice8"
+celltype[Major_data$Major == "Tail_3"] <- "Major_Tail_MaSp1"
+celltype[Major_data$Major == "Tail_1"] <- "Major_Tail_MaSp2"
+
+celltype[Major_data$Major == "Sac_B"] <- "Major_zone_B"
+celltype[Major_data$Major == "Sac_3"] <- "Major_zone_c"
+celltype[Major_data$Major == "Sac_2"] <- "Major_Sac_2"
+
+celltype[Major_data$Major == "Duct_1"] <- "Major_Duct_1"
+celltype[Major_data$Major == "Duct_2"] <- "Major_Duct_2"
+
+Major_data <- AddMetaData(Major_data, celltype, col.name = "celltype")
+Major_data@meta.data
+
+exprs_major <- data.frame(FetchData(object = Major_data, vars = unique(rownames(sub_Minor_recluster))))
+exprs_major$cellID <- rownames(exprs_major)
+
+celltype_major <- FetchData(Major_data, "Major_celltype")
+celltype_major$cellID <- rownames(celltype_major)
+
+Major_expression <- merge(exprs_major, celltype_major, by = "cellID")
+
+
+all_expression <- rbind(Minor_expression, Major_expression)
+  
+```
+
+
+## prepare for cell2location analysis
+
+```{r}
+
+library(Seurat)
+library(SeuratData)
+library(SeuratDisk) 
+
+```
+
+#### keep 400 for Minor of each celltype
+```{r}
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "RNA"
+sub_Minor_recluster@meta.data
+
+
+unique(sub_Minor_recluster$Recluster_celltype)
+Idents(sub_Minor_recluster) <- "Recluster_celltype"
+data.frame(table(Idents(sub_Minor_recluster)))
+
+keep.cells = c()
+for (sample in unique(sub_Minor_recluster$Recluster_celltype)){
+   cells = WhichCells(sub_Minor_recluster[, sub_Minor_recluster$Recluster_celltype == sample], downsample = 400)
+   keep.cells = c(keep.cells, cells)
+}
+
+data.sub = sub_Minor_recluster[,keep.cells]
+data.sub@meta.data
+data.sub
+
+DimPlot(data.sub, reduction = "umap", group.by = "seurat_clusters", label = TRUE)
+DimPlot(data.sub, group.by = "Recluster_celltype", label = TRUE)
+DimPlot(data.sub, group.by = "Recluster_GlandsPart", label = TRUE)
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir, params$cell2location, "Keep400_sub_Minor_recluster.h5Seurat", sep = '/')
+
+SaveH5Seurat(data.sub, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+```
+
+#### keep 400 for Minor of each celltype ---- 2
+
+```{r}
+
+sub_Minor_recluster_2 <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15.rds", sep = "/"))
+sub_Minor_recluster_2@meta.data
+
+# re-add celltypes
+re_celltype <- rep("Tail_MiSpabd",ncol(sub_Minor_recluster_2))
+
+re_celltype[sub_Minor_recluster_2$Recluster_celltype == "Minor_Sac_5"] <- "Sac_MiSpc"
+re_celltype[sub_Minor_recluster_2$Recluster_celltype == "Minor_Sac_3"] <- "Sac_1"
+
+re_celltype[sub_Minor_recluster_2$Recluster_celltype == "Minor_Duct_1"] <- "Duct_1"
+re_celltype[sub_Minor_recluster_2$Recluster_celltype == "Minor_Duct_2"] <- "Duct_2"
+
+sub_Minor_recluster_2 <- AddMetaData(sub_Minor_recluster_2, re_celltype, col.name = "Re_celltype")
+
+saveRDS(sub_Minor_recluster_2, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+
+```
+
+###### plot
+
+```{r}
+
+source("colorSchemes.R")
+MinorCelltypes <- MinorCelltypes()
+MinorCelltypes_3 <- MinorCelltypes_3()
+
+```
+
+
+```{r}
+
+sub_Minor_recluster_2 <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster_2) <- "Recluster"
+
+Dim_minor_1 <- DimPlot(sub_Minor_recluster_2, reduction = "umap", group.by = "Re_celltype" , label = TRUE, label.size = 5, repel = T, cols = MinorCelltypes_3)
+Dim_minor_2 <- DimPlot(sub_Minor_recluster_2, reduction = "umap", group.by = "Recluster_GlandsPart" , label = TRUE, label.size = 5)
+
+Idents(sub_Minor_recluster_2) <- "Re_celltype"
+F_minor <- FeaturePlot( sub_Minor_recluster_2, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2'))
+Dim_minor_1 + F_minor
+
+V_minor <- VlnPlot(sub_Minor_recluster_2, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2'), pt.size = 0, group.by = 'Re_celltype', cols = MinorCelltypes)
+
+sub_Minor_recluster_2 <- ScaleData(sub_Minor_recluster_2, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd','spa', 'LASC013229', 'xync', 'obst-e-2'), assay = "Recluster")
+
+sub_Minor_recluster_2$Re_celltype <- factor(x = sub_Minor_recluster_2$Re_celltype, levels = c('Tail_MiSpabd', 'Sac_MiSpc','Sac_1','Duct_1', 'Duct_2'))
+H_minor <- DoHeatmap(sub_Minor_recluster_2, features = c('MiSpa', 'MiSpb','MiSpc', 'MiSpd','spa', 'Spidroin3', 'LASC013229', 'xync', 'obst-e-2'),group.by = 'Re_celltype', group.colors = MinorCelltypes_3, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+H_minor_2 <- DoHeatmap(sub_Minor_recluster_2, features = c('MiSpa','LASC007034','LASC011995',"MiSpb", "MiSpd",'LASC007256','LASC010012','spa','LASC012649','LASC012648','LASC013229', 'xync','LASC005273','abcc3','boka',"MiSpc"),group.by = 'Re_celltype', group.colors = MinorCelltypes_3, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir,"integration_add_MarkerGenes/less_sub_Minor_recluster_umap.res.0.2.pdf", sep = '/'), width = 7, height = 5, Dim_minor_1)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/less_Solo_Feature_minor_res.0.2.pdf", sep = '/'), width = 10, height = 10, F_minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/less_Feature_minor_res.0.2.pdf", sep = '/'), width = 25, height = 10, Dim_minor_1 + F_minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/less_Violin_minor_res.0.2.pdf", sep = '/'), width = 15, height = 10, V_minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/less_Heatmap_minor_res.0.2.pdf", sep = '/'),H_minor, dpi = 600)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/less_Heatmap_minor_res.0.2_2.pdf", sep = '/'),H_minor_2, dpi = 600)
+
+```
+
+
+```{r}
+
+sub_Minor_recluster_2 <- subset(sub_Minor_recluster_2, subset = Re_celltype != "Minor_Duct")
+
+find_all_markers_result <- FindAllMarkers(sub_Minor_recluster_2, assay = "Recluster", only.pos = TRUE, min.pct = 0.1)
+
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+
+allmarkers_join_geneinfo <- find_all_markers_result %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+
+write_tsv(x = allmarkers_join_geneinfo, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Sub_Recluster_allmarkers_join_geneinfo_0.15.tsv", sep = "/"))
+
+
+DefaultAssay(sub_Minor_recluster_2) <- "RNA"
+sub_Minor_recluster_2@meta.data
+
+
+unique(sub_Minor_recluster_2$Re_celltype)
+
+Idents(sub_Minor_recluster_2) <- "Re_celltype"
+data.frame(table(Idents(sub_Minor_recluster_2)))
+
+keep.cells = c()
+for (sample in unique(sub_Minor_recluster_2$Re_celltype)){
+   cells = WhichCells(sub_Minor_recluster_2[, sub_Minor_recluster_2$Re_celltype == sample], downsample = 400)
+   keep.cells = c(keep.cells, cells)
+}
+
+data.sub = sub_Minor_recluster_2[,keep.cells]
+data.sub@meta.data
+
+DimPlot(data.sub, reduction = "umap", group.by = "seurat_clusters", label = TRUE)
+DimPlot(data.sub, group.by = "Re_celltype", label = TRUE)
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir,params$cell2location, "Keep400_sub_Minor_recluster_2.h5Seurat", sep = '/')
+
+SaveH5Seurat(data.sub, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+```
+
+#### keep 500 for Major of each celltype
+```{r}
+
+Major_data <- readRDS(paste(params$workingDir, params$majorresult, "LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds",sep = "/"))
+DefaultAssay(Major_data) <- "RNA"
+unique(Major_data@meta.data$integrated_snn_res.0.2)
+unique(Major_data@meta.data$Major)
+DimPlot(Major_data, group.by = "integrated_snn_res.0.2", label = TRUE, label.size = 5)
+celltype <- rep("unsure",ncol(Major_data))
+
+celltype[Major_data$Major == "Tail_2"] <- "Major_Tail_Spice8"
+celltype[Major_data$Major == "Tail_3"] <- "Major_Tail_MaSp1"
+celltype[Major_data$Major == "Tail_1"] <- "Major_Tail_MaSp2"
+
+celltype[Major_data$Major == "Sac_B"] <- "Major_zone_B"
+celltype[Major_data$Major == "Sac_3"] <- "Major_zone_c"
+celltype[Major_data$Major == "Sac_2"] <- "Major_Sac"
+
+celltype[Major_data$Major == "Duct_1"] <- "Major_Duct_1"
+celltype[Major_data$Major == "Duct_2"] <- "Major_Duct_2"
+
+Major_data <- AddMetaData(Major_data, celltype, col.name = "CellTypes")
+Major_data@meta.data
+
+saveRDS(Major_data, paste(params$workingDir, params$majorresult, "MajorSpecific.SCT.rds", sep = "/"))
+
+
+keep.cells = c()
+for (sample in unique(Major_data$Major)){
+   cells = WhichCells(Major_data[, Major_data$Major == sample], downsample = 500)
+   keep.cells = c(keep.cells, cells)
+}
+
+Major_data.sub = Major_data[,keep.cells]
+Major_data.sub@meta.data
+
+
+
+DimPlot(Major_data.sub, group.by = "CellTypes", label = TRUE)
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir,params$majorresult, "Keep500_sub_Major_recluster.h5Seurat", sep = '/')
+
+SaveH5Seurat(Major_data.sub, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+```
+
+#### keep 200 for Major and Minor ampullate glands
+```{r}
+
+# Minor data
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "Recluster"
+sub_Minor_recluster$CellTypes <- sub_Minor_recluster$Recluster_celltype
+sub_Minor_recluster$Batch <- "Minor_B1"
+
+#Major data
+Major_data <- readRDS(paste(params$workingDir, params$majorresult, "LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds",sep = "/"))
+DefaultAssay(Major_data) <- "RNA"
+
+## change Batch column
+Major_data$Batch <- paste0("Major_", Major_data@meta.data$Batch)
+## add one new column named CellTypes
+celltype <- rep("unsure",ncol(Major_data))
+celltype[Major_data$Major == "Tail_2"] <- "Major_Tail_Spice8"
+celltype[Major_data$Major == "Tail_3"] <- "Major_Tail_MaSp1"
+celltype[Major_data$Major == "Tail_1"] <- "Major_Tail_MaSp2"
+celltype[Major_data$Major == "Sac_B"] <- "Major_zone_B"
+celltype[Major_data$Major == "Sac_3"] <- "Major_zone_c"
+celltype[Major_data$Major == "Sac_2"] <- "Major_Sac"
+celltype[Major_data$Major == "Duct_1"] <- "Major_Duct_1"
+celltype[Major_data$Major == "Duct_2"] <- "Major_Duct_2"
+Major_data <- AddMetaData(Major_data, celltype, col.name = "CellTypes")
+
+Major_Minor_data <- merge(x = sub_Minor_recluster, y = Major_data)
+
+# save rds file
+saveRDS(Major_Minor_data, paste(params$workingDir, params$ampullateresult,"Major_Minor_recluster_addGenes.rds", sep = "/"))
+
+# keep 400 for Cell2Location analysis
+Idents(Major_Minor_data) <- "CellTypes"
+data.frame(table(Idents(Major_Minor_data)))
+
+keep.cells = c()
+for (sample in unique(Major_Minor_data$CellTypes)){
+   cells = WhichCells(Major_Minor_data[, Major_Minor_data$CellTypes == sample], downsample = 400)
+   keep.cells = c(keep.cells, cells)
+}
+Major_Minor_data.sub = Major_Minor_data[,keep.cells]
+DefaultAssay(Major_Minor_data.sub) <- "RNA"
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir,params$ampullateresult, "Keep400_Major_Minor_recluster.h5Seurat", sep = '/')
+
+SaveH5Seurat(Major_Minor_data.sub, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+
+```
+
+
+## library
+```{r}
+
+library(Seurat)
+library(tidyverse)
+
+```
+
+## load data
+```{r}
+
+Minor_recluster_annot <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+
+```
+
+
+## Tail
+```{r}
+
+celltypes <- unique(Minor_recluster_annot@meta.data$Recluster_celltype)
+
+# Minor_Tail_0
+sub_Tail_0 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Minor_Tail_0")
+df_Tail_0 <- as.data.frame(sub_Tail_0@assays$RNA@counts)
+sum_df_Tail_0 <- as.data.frame(rowSums(df_Tail_0)) %>% rename(Tail_0 = "rowSums(df_Minor_Tail_0)") %>% arrange(., desc(Tail_0))
+sum_df_Tail_0$Tail_0_genesPercell <- round(sum_df_Tail_0$Tail_0 / dim(df_Tail_0)[2], 0)
+sum_df_Tail_0$GeneName <- rownames(sum_df_Tail_0)
+
+# Minor_Tail_4
+sub_Tail_1 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Minor_Tail_4")
+df_Tail_1 <- as.data.frame(sub_Tail_1@assays$RNA@counts)
+sum_df_Tail_1 <- as.data.frame(rowSums(df_Tail_1)) %>% rename(Tail_1 = "rowSums(df_Minor_Tail_4)") %>% arrange(., desc(Tail_1))
+sum_df_Tail_1$Tail_1_genesPercell <- round(sum_df_Tail_1$Tail_1 / dim(df_Tail_1)[2], 0)
+sum_df_Tail_1$GeneName <- rownames(sum_df_Tail_1)
+
+sum_Tail <- left_join(sum_df_Tail_0, sum_df_Tail_1) %>% select("GeneName", "Minor_Tail_0", "Minor_Tail_0_genesPercell", "Minor_Tail_4", "Minor_Tail_4_genesPercell")
+
+```
+
+## Sac
+```{r}
+
+# Sac_4
+sub_Sac_4 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Sac_4")
+df_Sac_4 <- as.data.frame(sub_Sac_4@assays$RNA@counts)
+sum_df_Sac_4 <- as.data.frame(rowSums(df_Sac_4)) %>% rename(Sac_4 = "rowSums(df_Sac_4)") %>% arrange(., desc(Sac_4))
+sum_df_Sac_4$Sac_4_genesPercell <- round(sum_df_Sac_4$Sac_4 / dim(df_Sac_4)[2], 0)
+sum_df_Sac_4$GeneName <- rownames(sum_df_Sac_4)
+
+# Sac_6
+sub_Sac_6 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Sac_6")
+df_Sac_6 <- as.data.frame(sub_Sac_6@assays$RNA@counts)
+sum_df_Sac_6 <- as.data.frame(rowSums(df_Sac_6)) %>% rename(Sac_6 = "rowSums(df_Sac_6)") %>% arrange(., desc(Sac_6))
+sum_df_Sac_6$Sac_6_genesPercell <- round(sum_df_Sac_6$Sac_6 / dim(df_Sac_6)[2], 0)
+sum_df_Sac_6$GeneName <- rownames(sum_df_Sac_6)
+
+# Sac_5
+sub_Sac_5 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Sac_5")
+df_Sac_5 <- as.data.frame(sub_Sac_5@assays$RNA@counts)
+sum_df_Sac_5 <- as.data.frame(rowSums(df_Sac_5)) %>% rename(Sac_5 = "rowSums(df_Sac_5)") %>% arrange(., desc(Sac_5))
+sum_df_Sac_5$Sac_5_genesPercell <- round(sum_df_Sac_5$Sac_5 / dim(df_Sac_5)[2], 0)
+sum_df_Sac_5$GeneName <- rownames(sum_df_Sac_5)
+
+
+sum_Sac <- left_join(sum_df_Sac_4, sum_df_Sac_6) %>% select("GeneName", "Sac_4", "Sac_4_genesPercell","Sac_6", "Sac_6_genesPercell")
+sum_Sac <- left_join(sum_Sac, sum_df_Sac_5)
+
+```
+
+## Duct
+```{r}
+
+# Duct_2
+sub_Duct_2 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Duct_2")
+df_Duct_2 <- as.data.frame(sub_Duct_2@assays$RNA@counts)
+sum_df_Duct_2 <- as.data.frame(rowSums(df_Duct_2)) %>% rename(Duct_2 = "rowSums(df_Duct_2)") %>% arrange(., desc(Duct_2))
+sum_df_Duct_2$Duct_2_genesPercell <- round(sum_df_Duct_2$Duct_2 / dim(df_Duct_2)[2], 0)
+sum_df_Duct_2$GeneName <- rownames(sum_df_Duct_2)
+
+# Duct_3
+sub_Duct_3 <- subset(Minor_recluster_annot, subset = Recluster_celltype == "Duct_3")
+df_Duct_3 <- as.data.frame(sub_Duct_3@assays$RNA@counts)
+sum_df_Duct_3 <- as.data.frame(rowSums(df_Duct_3)) %>% rename(Duct_3 = "rowSums(df_Duct_3)") %>% arrange(., desc(Duct_3))
+sum_df_Duct_3$Duct_3_genesPercell <- round(sum_df_Duct_3$Duct_3 / dim(df_Duct_3)[2], 0)
+sum_df_Duct_3$GeneName <- rownames(sum_df_Duct_3)
+
+sum_Duct <- left_join(sum_df_Duct_2, sum_df_Duct_3) %>% select("GeneName", "Duct_2", "Duct_2_genesPercell", "Duct_3", "Duct_3_genesPercell")
+
+```
+
+```{r}
+# library
+#install.packages("hrbrthemes")
+library(ggplot2)
+library(dplyr)
+library(hrbrthemes)
+
+# Tail
+data_Tail <- data.frame(
+  GeneName = (sum_Tail$GeneName)[1:20],
+  value = c( (sum_Tail$Tail_0_genesPercell)[1:20], (sum_Tail$Tail_1_genesPercell)[1:20] ),
+  celltype = rep(c("Tail_0", "Tail_1"), each = 20)
+)
+
+p_Tail <- data_Tail %>%
+  ggplot( aes(x=GeneName, y=value, fill = celltype)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_text(aes(label = value), vjust = 1.6, color = "black", position = position_dodge(0.9), size = 2) +
+  scale_fill_brewer(palette = "Paired")
+  theme_minimal()
+
+
+# Sac
+data_Sac <- data.frame(
+  GeneName = (sum_Sac$GeneName)[1:20],
+  value = c( (sum_Sac$Sac_4_genesPercell)[1:20], (sum_Sac$Sac_6_genesPercell)[1:20], (sum_Sac$Sac_5_genesPercell)[1:20] ),
+  celltype = rep(c("Sac_4", "Sac_6", "Sac_5"), each = 20)
+)
+
+p_Sac <- data_Sac %>%
+  ggplot( aes(x=GeneName, y=value, fill = celltype)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_text(aes(label = value), vjust = 1.6, color = "black", position = position_dodge(0.9), size = 2) +
+  scale_fill_brewer(palette = "Paired")
+  theme_minimal()
+
+
+# Duct
+data_Duct <- data.frame(
+  GeneName = (sum_Duct$GeneName)[1:20],
+  value = c( (sum_Duct$Duct_2_genesPercell)[1:20], (sum_Duct$Duct_3_genesPercell)[1:20] ),
+  celltype = rep(c("Duct_2", "Duct_3"), each = 20)
+)
+
+p_Duct <- data_Duct %>%
+  ggplot( aes(x=GeneName, y=value, fill = celltype)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_text(aes(label = value), vjust = 1.6, color = "black", position = position_dodge(0.9), size = 2) +
+  #theme(axis.title.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_brewer(palette = "Paired")
+  theme_minimal()
+
+
+p_Tail
+p_Sac
+p_Duct
+
+```
+
+# Other clusters
+## Load data
+```{r}
+
+Minor_integration <- readRDS(paste(params$workingDir, params$dataDir, "all_minor_scRNA_annot_2.rds", sep = "/"))
+Minor_integration@meta.data
+
+Minor_integration_other <- subset(Minor_integration, subset = celltype == "unsure")
+DefaultAssay(Minor_integration_other) <- "Recluster"
+Minor_integration_other@meta.data
+Minor_integration_other@assays
+
+Minor_integration_other <- ScaleData(Minor_integration_other, verbose = FALSE)
+Minor_integration_other <- RunPCA(Minor_integration_other, npcs = 20, verbose = FALSE)
+Minor_integration_other <- RunUMAP(Minor_integration_other, reduction = "pca", dims = 1:20)
+
+Minor_integration_other <- FindNeighbors(Minor_integration_other, dims = 1:20)
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.1)
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.2)
+
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.2" , label = TRUE, label.size = 5)
+
+saveRDS(Minor_integration_other, paste(params$workingDir, params$dataDir, "Minor_integration_other.rds", sep = "/"))
+
+```
+
+```{r}
+Minor_integration_other <- readRDS(paste(params$workingDir, params$dataDir, "Minor_integration_other.rds", sep = "/"))
+Minor_integration_other@meta.data
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.2" , label = TRUE, label.size = 5)
+```
+
+
+# Major Spatial zones
+```{r}
+
+Major_zones <- readRDS(paste(params$workingDir, "spatial.all.major.zones.RDS", sep = "/"))
+Major_zones <- SetIdent(Major_zones, value = "majorAmpullateZones")
+levels(Major_zones)
+Major_zones_markers <- FindAllMarkers(Major_zones, only.pos = TRUE)
+Major_zones_markers_new <- Major_zones_markers %>% distinct() %>% filter(avg_log2FC > 1)
+Major_zones_markers_new$gene
+
+minor_marker <- read_tsv(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Recluster_allmarkers_join_geneinfo_0.15.tsv", sep = "/"))
+minor_marker_new <- minor_marker %>% distinct() %>% filter(avg_log2FC > 1)
+minor_marker_new$gene
+top5.minor_marker_new <- minor_marker_new %>%
+    group_by(cluster) %>%
+    slice_max(n = 5, order_by = avg_log2FC)
+top5.minor_marker_new$geneName
+
+
+commen_markers_1 <- intersect(Major_zones_markers_new$gene, minor_marker_new$gene)
+commen_markers_2 <- intersect(Major_zones_markers_new$gene, top5.minor_marker_new$gene)
+test <- intersect(Major_zones_markers$gene, minor_marker$gene)
+
+Major_zones$majorAmpullateZones <- factor(x = Major_zones$majorAmpullateZones, levels = c('ZoneA', 'ZoneB','ZoneC'))
+H_specific_markers <- DoHeatmap(Major_zones, 
+                              features = c('MiSpa','LASC007034','LASC011995',
+                                           "MiSpb", "MiSpd",'LASC007256',
+                                           'LASC010012','spa','LASC012649','LASC012648',
+                                           'LASC013229', 'xync',
+                                           'LASC005273','abcc3','boka',"MiSpc"), group.by = 'majorAmpullateZones', group.colors = c('#D5D6D5', '#C5C7C6','#B6B8B7'), size = 3, angle = 30, raster = F)+ theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("skyblue", "white", "firebrick3"))
+
+H_commen_markers_1 <- DoHeatmap(Major_zones, features = commen_markers_1, group.by = 'majorAmpullateZones', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("skyblue", "white", "firebrick3"))
+H_commen_markers_2 <- DoHeatmap(Major_zones, features = commen_markers_2, group.by = 'majorAmpullateZones', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("skyblue", "white", "firebrick3"))
+H_commen_markers_3 <- DoHeatmap(Major_zones, features = test, group.by = 'majorAmpullateZones', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("skyblue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_zones_commen_filter_markers.pdf", sep = '/'), H_commen_markers_1, dpi = 600)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_zones_commen_filter_top5_markers.pdf", sep = '/'), H_commen_markers_2, dpi = 600)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_zones_commen__markers.pdf", sep = '/'), H_commen_markers_3, dpi = 600, width = 10, height = 25)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_zones_Minor_genes_2.pdf", sep = '/'), H_specific_markers, dpi = 600)
+
+H_commen_markers
+H_commen_markers_1
+H_commen_markers_2
+H_commen_markers_3
+
+
+```
+
+```{r}
+
+source("colorSchemes.R")
+MinorCelltypes <- MinorCelltypes()
+
+sub_Minor_recluster_2 <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster_2) <- "Recluster"
+
+sub_Minor_recluster_2 <- ScaleData(sub_Minor_recluster_2, features = top5.minor_marker_new$geneName, assay = "Recluster")
+
+sub_Minor_recluster_2$Re_celltype <- factor(x = sub_Minor_recluster_2$Re_celltype, levels = c('Minor_Tail', 'Minor_MiSpc','Minor_Sac','Minor_Duct'))
+H_minor_1 <- DoHeatmap(sub_Minor_recluster_2, features = top5.minor_marker_new$geneName, group.by = 'Re_celltype', group.colors = MinorCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Top5.minor_marker.pdf", sep = '/'), H_minor_1, dpi = 600)
+
+sub_Minor_recluster_2 <- ScaleData(sub_Minor_recluster_2, features = c("MiSpa", "LASC007034", "LASC011995","MiSpb", "MiSpd","LASC007256","plcd1","LASC010012","spa","LASC012649","LASC012648","LASC013229","Spidroin3","xync","LASC005273","abcc3","boka","MiSpc"), assay = "Recluster")
+sub_Minor_recluster_2$Re_celltype <- factor(x = sub_Minor_recluster_2$Re_celltype, levels = c('Minor_Tail', 'Minor_MiSpc','Minor_Sac','Minor_Duct'))
+H_minor_2 <- DoHeatmap(sub_Minor_recluster_2, features = c("MiSpa", "LASC007034", "LASC011995","MiSpb", "MiSpd","LASC007256","plcd1","LASC010012","spa","LASC012649","LASC012648","LASC013229","Spidroin3","xync","LASC005273","abcc3","boka","MiSpc"), group.by = 'Re_celltype', group.colors = MinorCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Specific_marker_2.pdf", sep = '/'), H_minor_2, dpi = 600)
+
+
+# celltypes
+sub_Minor_recluster_2@meta.data
+sub_Minor_recluster_2$Recluster_celltype <- factor(x = gsub("Minor_","",sub_Minor_recluster_2$Recluster_celltype),levels = c('Tail_0', 'Tail_4','Sac_5','Sac_3','Duct_1'))
+H_minor_2 <- DoHeatmap(sub_Minor_recluster_2, features = c("MiSpa", "LASC007034", "LASC011995","MiSpb", "MiSpd","LASC007256","plcd1","LASC010012","spa","LASC012649","LASC012648","LASC013229","Spidroin3","xync","LASC005273","abcc3","boka","MiSpc"), group.by = 'Recluster_celltype', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Specific_marker_2.pdf", sep = '/'), H_minor_2, dpi = 600)
+
+```
+
+# Integrate Minor and Major
+```{r}
+
+# Minor data
+sub_Minor_recluster <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_recluster_annot_res.0.15_2.rds", sep = "/"))
+DefaultAssay(sub_Minor_recluster) <- "Recluster"
+sub_Minor_recluster$CellTypes <- paste0("Minor_",sub_Minor_recluster$Re_celltype)
+sub_Minor_recluster$Batch <- "Minor_B1"
+sub_Minor_recluster@meta.data
+#Major data
+Major_data <- readRDS(paste(params$workingDir, params$majorresult, "LarSco.combined_filtered.integrated.MajorSpecific.SCT.2.rds",sep = "/"))
+DefaultAssay(Major_data) <- "RNA"
+
+## change Batch column
+Major_data$Batch <- paste0("Major_", Major_data@meta.data$Batch)
+## add one new column named CellTypes
+celltype <- rep("unsure",ncol(Major_data))
+celltype[Major_data$Major == "Tail_2"] <- "Major_Tail_Spice8"
+celltype[Major_data$Major == "Tail_3"] <- "Major_Tail_MaSp1"
+celltype[Major_data$Major == "Tail_1"] <- "Major_Tail_MaSp2"
+celltype[Major_data$Major == "Sac_B"] <- "Major_MaSp3"
+celltype[Major_data$Major == "Sac_3"] <- "Major_Sac_LASC013329"
+celltype[Major_data$Major == "Sac_2"] <- "Major_Sac_1"
+celltype[Major_data$Major == "Duct_1"] <- "Major_Duct_1"
+celltype[Major_data$Major == "Duct_2"] <- "Major_Duct_2"
+Major_data <- AddMetaData(Major_data, celltype, col.name = "CellTypes")
+
+Major_Minor_data <- merge(x = sub_Minor_recluster, y = Major_data)
+
+
+unique(Major_Minor_data@meta.data$CellTypes)
+
+DefaultAssay(Major_Minor_data) <- "RNA"
+Major_Minor_data.list <- SplitObject(Major_Minor_data, split.by = "Batch")
+Major_Minor_data.list <- lapply(X = Major_Minor_data.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+features <- SelectIntegrationFeatures(object.list = Major_Minor_data.list)
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+Spidroin_name <- subset(geneInfo, geneInfo$Group == "Spidroin")
+Spidroin_name <- unique(Spidroin_name$scGeneName)
+features_new <- unique(features[!features %in% Spidroin_name])
+
+Major_Minor_data.list <- lapply(X = Major_Minor_data.list, FUN = function(x) {
+    x <- ScaleData(x, features = features_new, verbose = FALSE)
+    x <- RunPCA(x, features = features_new, verbose = FALSE)
+})
+
+Major_Minor_data.anchors <- FindIntegrationAnchors(object.list = Major_Minor_data.list, anchor.features = features_new, reduction = "rpca", k.anchor = 70)
+Major_Minor_data_new <- IntegrateData(anchorset = Major_Minor_data.anchors, new.assay.name = "Minor_Major_new")
+
+unique(Major_Minor_data_new@meta.data$CellTypes)
+
+saveRDS(Major_Minor_data_new, paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+
+
+DefaultAssay(Major_Minor_data_new) <- "Minor_Major_new"
+
+Major_Minor_data_new <- ScaleData(Major_Minor_data_new, verbose = FALSE)
+Major_Minor_data_new <- RunPCA(Major_Minor_data_new, npcs = 20, verbose = FALSE)
+Major_Minor_data_new <- RunUMAP(Major_Minor_data_new, reduction = "pca", dims = 1:20)
+
+Major_Minor_data_new <- FindNeighbors(Major_Minor_data_new, dims = 1:20)
+Major_Minor_data_new <- FindClusters(Major_Minor_data_new, resolution = 0.1)
+Major_Minor_data_new <- FindClusters(Major_Minor_data_new, resolution = 0.15)
+Major_Minor_data_new <- FindClusters(Major_Minor_data_new, resolution = 0.2)
+
+DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "Minor_Major_new_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "Minor_Major_new_snn_res.0.15" , label = TRUE, label.size = 5)
+DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "Minor_Major_new_snn_res.0.2" , label = TRUE, label.size = 5)
+
+DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+
+saveRDS(Major_Minor_data_new, paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+```
+
+
+```{r}
+
+Major_Minor_data_new <- readRDS(paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+source("colorSchemes.R")
+AmpullateColors_2 <- AmpullateColors_2()
+AmpullateCelltypes <- AmpullateCelltypes()
+
+Major_Minor_data_new@meta.data
+
+Major_Minor_data_new@meta.data$orig.ident <- gsub("Sample", "Major", Major_Minor_data_new@meta.data$orig.ident)
+
+unique(Major_Minor_data_new@meta.data$CellTypes)
+
+GB1_ident = Major_Minor_data_new@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar(identity = "fill") + 
+  scale_fill_manual(values = AmpullateColors_2) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+Dim_Minor_Major_1 <- DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5, cols = AmpullateColors_2)
+
+Dim_Minor_Major_2 <- DimPlot(Major_Minor_data_new, reduction = "umap", group.by = "Minor_Major_new_snn_res.0.2" , label = TRUE, label.size = 5)
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_Major_new_GB1_ident.pdf", sep = "/"), GB1_ident)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_Major_new_0.2_1.pdf", sep = "/"), Dim_Minor_Major_1)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Minor_Major_new_0.2_2.pdf", sep = "/"), Dim_Minor_Major_2)
+
+
+Major_Minor_data_new_markers <- FindAllMarkers(Major_Minor_data_new, assay = "Minor_Major_new", only.pos = TRUE, min.pct = 0.1)
+
+write_tsv(x = Major_Minor_data_new_markers, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_Minor_data_new_markers_0.2.tsv", sep = "/"))
+
+Major_Minor_data_new$CellTypes <- gsub("Major_MaSp3", "Major_Sac_MaSp3", Major_Minor_data_new$CellTypes)
+unique(Major_Minor_data_new$CellTypes)
+Major_Minor_data_new@meta.data
+Major_Minor_data_new$CellTypes <- factor(x = Major_Minor_data_new$CellTypes, levels = c("Minor_Tail_MiSpabd","Minor_Sac_MiSpc","Minor_Sac_1","Minor_Duct_1","Minor_Duct_2","Major_Tail_Spice8","Major_Tail_MaSp1","Major_Tail_MaSp2","Major_Sac_MaSp3"   ,"Major_Sac_LASC013329","Major_Sac_1","Major_Duct_1","Major_Duct_2"))
+
+H_minor_1 <- DoHeatmap(Major_Minor_data_new, features = c('LASC007034','LASC011995', 'LASC007256','LASC010012','spa','LASC012649','LASC012648','LASC013229', 'xync','LASC005273','abcc3','boka','LASC010016','LASC013229','LASC004595','LASC017532'), group.by = 'CellTypes', group.colors = AmpullateCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+H_minor_2 <- DoHeatmap(Major_Minor_data_new, features = c('LASC007034','LASC011995', 'LASC007256','LASC010012','spa','LASC012649','LASC012648','LASC013229', 'xync','LASC005273','abcc3','boka','LASC010016','LASC013229','LASC004595','LASC017532'), group.by = 'Minor_Major_new_snn_res.0.2', group.colors = AmpullateColors_2, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Major_Minor_data_new_H_minor_1.pdf", sep = '/'),H_minor_1, dpi = 600, width = 10)
+
+saveRDS(Major_Minor_data_new, paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+```
+
+## select Minor_Sac_MiSpc and Major_Sac_MaSp3
+```{r}
+
+Major_Minor_data_new <- readRDS(paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+unique(Major_Minor_data_new@meta.data$orig.ident)
+
+# subset of Minor_Sac_MiSpc and Major_Sac_MaSp3 celltypes
+sub_Major_Minor_data_1 <- subset(Major_Minor_data_new, subset = CellTypes == "Minor_Sac_MiSpc" | CellTypes == "Major_Sac_MaSp3")
+sub_Major_Minor_data_1@meta.data
+sub_Major_Minor_data_1@active.assay
+
+DefaultAssay(sub_Major_Minor_data_1) <- "RNA"
+sub_Major_Minor_data_1.list <- SplitObject(sub_Major_Minor_data_1, split.by = "Batch")
+sub_Major_Minor_data_1.list <- lapply(X = sub_Major_Minor_data_1.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+features <- SelectIntegrationFeatures(object.list = sub_Major_Minor_data_1.list)
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+Spidroin_name <- subset(geneInfo, geneInfo$Group == "Spidroin")
+Spidroin_name <- unique(Spidroin_name$scGeneName)
+features_new <- unique(features[!features %in% Spidroin_name])
+
+sub_Major_Minor_data_1.list <- lapply(X = sub_Major_Minor_data_1.list, FUN = function(x) {
+    x <- ScaleData(x, features = features_new, verbose = FALSE)
+    x <- RunPCA(x, features = features_new, verbose = FALSE)
+})
+
+Major_Minor_data.anchors <- FindIntegrationAnchors(object.list = sub_Major_Minor_data_1.list, anchor.features = features_new, reduction = "rpca", k.anchor = 70)
+sub_Major_Minor_data_1 <- IntegrateData(anchorset = Major_Minor_data.anchors, new.assay.name = "sub_Major_Minor_1")
+
+
+DefaultAssay(sub_Major_Minor_data_1) <- "sub_Major_Minor_1"
+
+sub_Major_Minor_data_1 <- ScaleData(sub_Major_Minor_data_1, verbose = FALSE)
+sub_Major_Minor_data_1 <- RunPCA(sub_Major_Minor_data_1, npcs = 20, verbose = FALSE)
+sub_Major_Minor_data_1 <- RunUMAP(sub_Major_Minor_data_1, reduction = "pca", dims = 1:20)
+
+sub_Major_Minor_data_1 <- FindNeighbors(sub_Major_Minor_data_1, dims = 1:20)
+sub_Major_Minor_data_1 <- FindClusters(sub_Major_Minor_data_1, resolution = 0.2)
+
+DimPlot(sub_Major_Minor_data_1, reduction = "umap", group.by = "sub_Major_Minor_1_snn_res.0.2" , label = TRUE, label.size = 5)
+
+DimPlot(sub_Major_Minor_data_1, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+
+saveRDS(sub_Major_Minor_data_1, paste(params$workingDir, params$ampullateresult,"sub_Major_Minor_data_1.rds", sep = "/"))
+
+```
+
+```{r}
+
+sub_Major_Minor_data_1 <- readRDS(paste(params$workingDir, params$ampullateresult,"sub_Major_Minor_data_1.rds", sep = "/"))
+DefaultAssay(sub_Major_Minor_data_1) <- "sub_Major_Minor_1"
+
+sub_Major_Minor_data_1_markers <- FindAllMarkers(sub_Major_Minor_data_1, assay = "sub_Major_Minor_1", only.pos = TRUE, min.pct = 0.1)
+
+write_tsv(x = sub_Major_Minor_data_1_markers, file = paste(params$workingDir, params$ampullateresult, "sub_1_Major_Minor_data_markers_0.2.tsv", sep = "/"))
+
+sub_Major_Minor_data_1_markers <- sub_Major_Minor_data_1_markers %>% distinct() %>%
+  filter(avg_log2FC > 1) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+write_tsv(x = sub_Major_Minor_data_1_markers, file = paste(params$workingDir, params$ampullateresult, "sub_1_Major_Minor_data_markers_filtered_0.2.tsv", sep = "/"))
+
+source("colorSchemes.R")
+AmpullateColors_2 <- AmpullateColors_2()
+AmpullateCelltypes <- AmpullateCelltypes()
+
+GB1_ident = sub_Major_Minor_data_1@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar(identity = "fill") + 
+  scale_fill_manual(values = AmpullateColors_2) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+Dim_sub_1_Major_Minor_data_1 = DimPlot(sub_Major_Minor_data_1, reduction = "umap", group.by = "orig.ident" , label.size = 5)
+
+Dim_sub_1_Major_Minor_data_2 = DimPlot(sub_Major_Minor_data_1, reduction = "umap", group.by = "sub_Major_Minor_1_snn_res.0.2" , label = TRUE, label.size = 5)
+
+sub_Major_Minor_data_1$CellTypes <- factor(x = sub_Major_Minor_data_1$CellTypes, levels = c("Minor_Sac_MiSpc","Major_Sac_MaSp3"))
+
+H_1 <- DoHeatmap(sub_Major_Minor_data_1, features = sub_Major_Minor_data_1_markers$gene, group.by = 'CellTypes', group.colors = AmpullateCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+H_2 <- DoHeatmap(sub_Major_Minor_data_1, features = sub_Major_Minor_data_1_markers$gene, group.by = 'sub_Major_Minor_1_snn_res.0.2', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+H_3 <- DoHeatmap(sub_Major_Minor_data_1, features = c("xync", "LASC005273", "abcc3", "boka"), group.by = 'CellTypes', group.colors = AmpullateCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_1_Major_Minor_data_GB1_ident.pdf", sep = "/"), GB1_ident)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_1_Major_Minor_data_0.2_1.pdf", sep = "/"), Dim_sub_1_Major_Minor_data_1)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_1_Major_Minor_data_0.2_2.pdf", sep = "/"), Dim_sub_1_Major_Minor_data_2)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_1_Major_Minor_0.2_H1.pdf", sep = '/'),H_1, dpi = 600, width = 10)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_1_Major_Minor_0.2_H2.pdf", sep = '/'),H_2, dpi = 600, width = 10)
+
+```
+
+## select Minor_Sac_1 and Major_Sac_LASC013329
+```{r}
+
+Major_Minor_data_new <- readRDS(paste(params$workingDir, params$ampullateresult,"Major_Minor_data_new.rds", sep = "/"))
+
+unique(Major_Minor_data_new@meta.data$CellTypes)
+
+# subset of Minor_Sac_MiSpc and Major_Sac_MaSp3 celltypes
+sub_Major_Minor_data_2 <- subset(Major_Minor_data_new, subset = CellTypes == "Minor_Sac_1" | CellTypes == "Major_Sac_LASC013329")
+sub_Major_Minor_data_2@meta.data
+sub_Major_Minor_data_2@active.assay
+
+DefaultAssay(sub_Major_Minor_data_2) <- "RNA"
+sub_Major_Minor_data_2.list <- SplitObject(sub_Major_Minor_data_2, split.by = "Batch")
+sub_Major_Minor_data_2.list <- lapply(X = sub_Major_Minor_data_2.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+features <- SelectIntegrationFeatures(object.list = sub_Major_Minor_data_2.list)
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+Spidroin_name <- subset(geneInfo, geneInfo$Group == "Spidroin")
+Spidroin_name <- unique(Spidroin_name$scGeneName)
+features_new <- unique(features[!features %in% Spidroin_name])
+
+sub_Major_Minor_data_2.list <- lapply(X = sub_Major_Minor_data_2.list, FUN = function(x) {
+    x <- ScaleData(x, features = features_new, verbose = FALSE)
+    x <- RunPCA(x, features = features_new, verbose = FALSE)
+})
+
+sub_Major_Minor_data_2.anchors <- FindIntegrationAnchors(object.list = sub_Major_Minor_data_2.list, anchor.features = features_new, reduction = "rpca", k.anchor = 70)
+sub_Major_Minor_data_2 <- IntegrateData(anchorset = sub_Major_Minor_data_2.anchors, new.assay.name = "sub_Major_Minor_2")
+
+
+DefaultAssay(sub_Major_Minor_data_2) <- "sub_Major_Minor_2"
+
+sub_Major_Minor_data_2 <- ScaleData(sub_Major_Minor_data_2, verbose = FALSE)
+sub_Major_Minor_data_2 <- RunPCA(sub_Major_Minor_data_2, npcs = 20, verbose = FALSE)
+sub_Major_Minor_data_2 <- RunUMAP(sub_Major_Minor_data_2, reduction = "pca", dims = 1:20)
+
+sub_Major_Minor_data_2 <- FindNeighbors(sub_Major_Minor_data_2, dims = 1:20)
+sub_Major_Minor_data_2 <- FindClusters(sub_Major_Minor_data_2, resolution = 0.2)
+
+DimPlot(sub_Major_Minor_data_2, reduction = "umap", group.by = "sub_Major_Minor_2_snn_res.0.2" , label = TRUE, label.size = 5)
+
+DimPlot(sub_Major_Minor_data_2, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5)
+
+saveRDS(sub_Major_Minor_data_2, paste(params$workingDir, params$ampullateresult,"sub_Major_Minor_data_2.rds", sep = "/"))
+
+```
+
+```{r}
+
+sub_Major_Minor_data_2 <- readRDS(paste(params$workingDir, params$ampullateresult,"sub_Major_Minor_data_2.rds", sep = "/"))
+DefaultAssay(sub_Major_Minor_data_2) <- "sub_Major_Minor_2"
+
+sub_Major_Minor_data_2_markers <- FindAllMarkers(sub_Major_Minor_data_2, assay = "sub_Major_Minor_2", only.pos = TRUE, min.pct = 0.1)
+write_tsv(x = sub_Major_Minor_data_2_markers, file = paste(params$workingDir, params$ampullateresult, "sub_2_Major_Minor_data_markers_0.2.tsv", sep = "/"))
+
+sub_Major_Minor_data_2_markers <- sub_Major_Minor_data_2_markers %>% distinct() %>%
+  filter(avg_log2FC > 1) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+write_tsv(x = sub_Major_Minor_data_2_markers, file = paste(params$workingDir, params$ampullateresult, "sub_2_Major_Minor_data_markers_filtered_0.2.tsv", sep = "/"))
+
+source("colorSchemes.R")
+AmpullateColors_2 <- AmpullateColors_2()
+AmpullateCelltypes <- AmpullateCelltypes()
+
+GB1_ident = sub_Major_Minor_data_2@meta.data %>%
+  ggplot(aes(seurat_clusters, fill = orig.ident)) +
+  geom_bar(identity = "fill") + 
+  scale_fill_manual(values = AmpullateColors_2) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+Dim_sub_2_Major_Minor_data_1 = DimPlot(sub_Major_Minor_data_2, reduction = "umap", group.by = "orig.ident" , label.size = 5)
+
+Dim_sub_2_Major_Minor_data_2 = DimPlot(sub_Major_Minor_data_2, reduction = "umap", group.by = "sub_Major_Minor_2_snn_res.0.2" , label = TRUE, label.size = 5)
+
+sub_Major_Minor_data_2$CellTypes <- factor(x = sub_Major_Minor_data_2$CellTypes, levels = c("Minor_Sac_1","Major_Sac_LASC013329"))
+
+H_1 <- DoHeatmap(sub_Major_Minor_data_2, features = sub_Major_Minor_data_2_markers$gene, group.by = 'CellTypes', group.colors = AmpullateCelltypes, size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+H_2 <- DoHeatmap(sub_Major_Minor_data_2, features = sub_Major_Minor_data_2_markers$gene, group.by = 'sub_Major_Minor_2_snn_res.0.2', size = 3, angle = 30, raster = F)  + theme(axis.text.y = element_text(size = 10))  + scale_fill_gradientn(colors = c("blue", "white", "firebrick3"))
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_2_Major_Minor_data_GB1_ident.pdf", sep = "/"), GB1_ident)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_2_Major_Minor_data_0.2_1.pdf", sep = "/"), Dim_sub_2_Major_Minor_data_1)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_2_Major_Minor_data_0.2_2.pdf", sep = "/"), Dim_sub_2_Major_Minor_data_2)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_2_Major_Minor_0.2_H1.pdf", sep = '/'),H_1, dpi = 600, width = 10)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_2_Major_Minor_0.2_H2.pdf", sep = '/'),H_2, dpi = 600, width = 10)
+
+```

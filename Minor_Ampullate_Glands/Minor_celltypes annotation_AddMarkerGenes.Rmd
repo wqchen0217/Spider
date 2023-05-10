@@ -1,0 +1,198 @@
+---
+title: "cell types annotation and prepare sc data for cell2location"
+author: "Wenqing Chen"
+date: "2023-01-27"
+
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+    df_print: paged
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  cell2location: results/MinorGland/integration_add_MarkerGenes/Cell2Location
+  
+---
+
+# library
+```{r}
+
+library(Seurat)
+
+```
+
+# Load minor single cell data
+# single cell data annotation
+```{r}
+
+minor_scRNA <- readRDS(file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/LarSco.combined_filtered.int.rds", sep = '/'))
+
+DefaultAssay(minor_scRNA) <- "RNA"
+minor_scRNA@active.assay
+minor_scRNA@meta.data
+table(minor_scRNA@active.ident)
+
+
+# add celltypes
+celltype <- rep("unsure",ncol(minor_scRNA))
+
+celltype[minor_scRNA$seurat_clusters == "1"] <- "Tail_1"
+celltype[minor_scRNA$seurat_clusters == "2"] <- "Tail_2"
+celltype[minor_scRNA$seurat_clusters == "3"] <- "Tail_3"
+celltype[minor_scRNA$seurat_clusters == "6"] <- "Tail_6"
+
+celltype[minor_scRNA$seurat_clusters == "4"] <- "Sac_4"   
+celltype[minor_scRNA$seurat_clusters == "13"] <- "Sac_13"
+celltype[minor_scRNA$seurat_clusters == "9"] <- "Sac_9"
+
+celltype[minor_scRNA$seurat_clusters == "0"] <- "Duct_0"
+celltype[minor_scRNA$seurat_clusters == "5"] <- "Duct_5"
+celltype[minor_scRNA$seurat_clusters == "11"] <- "Duct_11"
+
+
+all_minor_scRNA_annot <- AddMetaData(minor_scRNA, celltype, col.name = "celltype")
+all_minor_scRNA_annot@meta.data
+
+
+# add minor gland parts
+MinorGland <- rep("unsure",ncol(minor_scRNA))
+
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "1"] <- "Tail"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "2"] <- "Tail"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "3"] <- "Tail"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "6"] <- "Tail"
+
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "4"] <- "Sac"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "13"] <- "Sac"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "9"] <- "Sac"
+
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "0"] <- "Duct"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "5"] <- "Duct"
+MinorGland[all_minor_scRNA_annot$seurat_clusters == "11"] <- "Duct"
+
+
+all_minor_scRNA_annot <- AddMetaData(all_minor_scRNA_annot, MinorGland, col.name = "GlandsPart")
+all_minor_scRNA_annot@meta.data
+
+
+# save RDS file of all clusters, which includes "unsure" clusters
+
+saveRDS(all_minor_scRNA_annot, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/all_minor_scRNA_annot.rds", sep = '/'))
+
+
+# plot
+all_minor_scRNA_annot <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/all_minor_scRNA_annot.rds", sep = '/'))
+source("colorSchemes.R")
+MinorColors <- MinorColors()
+
+
+DimPlot(all_minor_scRNA_annot, reduction = "umap", group.by = "seurat_clusters", label = TRUE)
+DimPlot(all_minor_scRNA_annot, group.by = "celltype", label = TRUE, cols = MinorColors)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/all_celltype.pdf", sep = "/"), width = 8,  height = 8)
+DimPlot(all_minor_scRNA_annot, group.by = "GlandsPart", label = TRUE)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/all_glandpart.pdf", sep = "/"), width = 8,  height = 8)
+
+# only save annotated clusters, without "unsure" clusters
+sub_minor_scRNA_annot <- subset(all_minor_scRNA_annot, subset = celltype != "unsure")
+sub_minor_scRNA_annot@meta.data
+
+saveRDS(sub_minor_scRNA_annot, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_minor_scRNA_annot.rds", sep = '/'))
+
+DimPlot(sub_minor_scRNA_annot, reduction = "umap", group.by = "seurat_clusters", label = TRUE)
+DimPlot(sub_minor_scRNA_annot, group.by = "celltype", label = TRUE)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_celltype.pdf", sep = "/"), width = 8,  height = 8)
+DimPlot(sub_minor_scRNA_annot, group.by = "GlandsPart", label = TRUE)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_glandpart.pdf", sep = "/"), width = 8,  height = 8)
+
+
+
+```
+
+
+# prepare for cell2location analysis
+
+```{r}
+
+library(Seurat)
+library(SeuratData)
+library(SeuratDisk) 
+
+```
+
+
+### all minor scData
+```{r}
+
+C2L_all_minor_scRNA <- all_minor_scRNA_annot
+
+class(C2L_all_minor_scRNA)
+C2L_all_minor_scRNA@active.assay
+unique(C2L_all_minor_scRNA@meta.data$celltype)
+
+
+# transfer from seurat project to h5ad
+all_filename = paste(params$workingDir,params$cell2location, "C2L_all_minor_scRNA.h5Seurat", sep = '/')
+
+SaveH5Seurat(C2L_all_minor_scRNA, all_filename)
+Convert(all_filename, dest = "h5ad")
+
+```
+
+
+### sub minor scData
+```{r}
+
+C2L_sub_minor_scRNA <- sub_minor_scRNA_annot
+
+class(C2L_sub_minor_scRNA)
+DefaultAssay(C2L_sub_minor_scRNA) <- "RNA"
+C2L_sub_minor_scRNA@meta.data
+
+unique(C2L_sub_minor_scRNA@meta.data$celltype)
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir,params$cell2location, "C2L_sub_minor_scRNA.h5Seurat", sep = '/')
+
+SaveH5Seurat(C2L_sub_minor_scRNA, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+```
+
+
+### keep 100 for each celltype
+```{r}
+all_minor_scRNA_annot
+DefaultAssay(all_minor_scRNA_annot) <- "RNA"
+all_minor_scRNA_annot@meta.data
+
+
+unique(all_minor_scRNA_annot$celltype)
+
+keep.cells = c()
+for (sample in unique(all_minor_scRNA_annot$celltype)){
+   cells = WhichCells(all_minor_scRNA_annot[, all_minor_scRNA_annot$celltype == sample], downsample = 100)
+   keep.cells = c(keep.cells, cells)
+}
+
+data.sub = all_minor_scRNA_annot[,keep.cells]
+data.sub@meta.data
+data.sub
+
+DimPlot(data.sub, reduction = "umap", group.by = "seurat_clusters", label = TRUE)
+DimPlot(data.sub, group.by = "celltype", label = TRUE)
+DimPlot(data.sub, group.by = "GlandsPart", label = TRUE)
+
+
+# transfer from seurat project to h5ad
+sub_filename = paste(params$workingDir,params$cell2location, "Keep100_all_minor_scRNA.h5Seurat", sep = '/')
+
+SaveH5Seurat(data.sub, sub_filename)
+Convert(sub_filename, dest = "h5ad")
+
+```
+

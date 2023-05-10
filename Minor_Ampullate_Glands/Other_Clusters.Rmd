@@ -1,0 +1,389 @@
+---
+title: "Other_Clusters"
+author: "Wenqing Chen"
+date: "2023-03-27"
+output: html_document
+
+params:
+  workingDir: ~/spidersilk_project/1_single.cell
+  MinorResultDir: results/MinorGland
+  BoxDir: ~/Box/bridgeSpider/scRNA
+  repositoryPath: ~/git/spidersilk
+  geneInfo: Rscripts/loadGeneInfo.R
+  majorresult: results/MajorGland
+
+---
+
+# library
+```{r setup, include=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(dplyr) 
+library(cowplot)
+library(ggplot2)
+library(pheatmap)
+library(rafalib)
+library(ggraph)
+library(clustree)
+library(ComplexHeatmap)
+library(circlize)
+
+```
+
+
+# Other clusters
+## Load data
+```{r}
+
+Minor_integration <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/sub_minor_scRNA_annot_recluster.rds", sep = "/"))
+
+Minor_integration_other <- subset(Minor_integration, subset = celltype == "unsure")
+saveRDS(Minor_integration_other, paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenesOther_clusters/Minor_integration_other.rds", sep = "/"))
+
+```
+
+### Minor Ampullate Glands
+```{r}
+
+Minor_integration_other <- readRDS(paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+Minor_integration_other@meta.data
+
+DefaultAssay(Minor_integration_other) <- "Recluster"
+Minor_integration_other@meta.data
+Minor_integration_other@assays
+
+Minor_integration_other <- ScaleData(Minor_integration_other, verbose = FALSE)
+Minor_integration_other <- RunPCA(Minor_integration_other, npcs = 20, verbose = FALSE)
+Minor_integration_other <- RunUMAP(Minor_integration_other, reduction = "pca", dims = 1:20)
+
+Minor_integration_other <- FindNeighbors(Minor_integration_other, dims = 1:20)
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.05)
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.1)
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.2)
+
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.05" , label = TRUE, label.size = 5)
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.2" , label = TRUE, label.size = 5)
+
+clustree <- clustree(Minor_integration_other@meta.data, prefix = "Recluster_snn_res.")
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Clustree_recluster.pdf", sep = '/'), clustree, width = 10, height = 10)
+# choose resolution = 0.05
+Minor_integration_other <- FindClusters(Minor_integration_other, resolution = 0.05)
+
+saveRDS(Minor_integration_other, paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+
+```
+
+#### find markers
+```{r}
+
+Minor_integration_other <- readRDS(paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+Minor_Markers <- FindAllMarkers(Minor_integration_other, assay = "Recluster", only.pos = TRUE, min.pct = 0.25)
+
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+
+Minor_Markers_join_geneinfo <- Minor_Markers %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+
+write_tsv(x = Minor_Markers_join_geneinfo, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Markers_Minor_integration_other_0.05.tsv", sep = "/"))
+
+
+```
+
+### Major Ampullate Glands
+```{r}
+# create Recluster assay
+Major_integration_other <- readRDS(paste(params$BoxDir, "LarSco.combined_filtered.integrated.Other.SCT.rds", sep = "/"))
+
+DefaultAssay(Major_integration_other) <- "RNA"
+Major_integration_other.list <- SplitObject(Major_integration_other, split.by = "orig.ident")
+Major_integration_other.list <- lapply(X = Major_integration_other.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+features <- SelectIntegrationFeatures(object.list = Major_integration_other.list)
+
+Major_integration_other.list <- lapply(X = Major_integration_other.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+Major_integration_other.anchors <- FindIntegrationAnchors(object.list = Major_integration_other.list, anchor.features = features,
+                                                           reduction = "rpca", k.anchor = 70)
+Major_integration_other <- IntegrateData(anchorset = Major_integration_other.anchors, new.assay.name = "Recluster")
+
+saveRDS(Major_integration_other, paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+
+```
+
+```{r}
+
+Major_integration_other <- read_rds(paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+DefaultAssay(Major_integration_other) <- "Recluster"
+Major_integration_other@meta.data
+Major_integration_other@assays
+
+Major_integration_other <- ScaleData(Major_integration_other, verbose = FALSE)
+Major_integration_other <- RunPCA(Major_integration_other, npcs = 20, verbose = FALSE)
+Major_integration_other <- RunUMAP(Major_integration_other, reduction = "pca", dims = 1:20)
+
+Major_integration_other <- FindNeighbors(Major_integration_other, dims = 1:20)
+Major_integration_other <- FindClusters(Major_integration_other, resolution = 0.05)
+Major_integration_other <- FindClusters(Major_integration_other, resolution = 0.1)
+Major_integration_other <- FindClusters(Major_integration_other, resolution = 0.2)
+
+DimPlot(Major_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.05" , label = TRUE, label.size = 5)
+DimPlot(Major_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Major_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.2" , label = TRUE, label.size = 5)
+
+clustree <- clustree(Major_integration_other@meta.data, prefix = "Recluster_snn_res.")
+ggsave(paste(params$workingDir, params$majorresult, "Clustree_recluster_other.pdf", sep = '/'), clustree, width = 10, height = 10)
+# choose resolution = 0.1
+Major_integration_other <- FindClusters(Major_integration_other, resolution = 0.1)
+saveRDS(Major_integration_other, paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+
+```
+
+
+
+#### find markers
+```{r}
+
+Major_integration_other <- read_rds(paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+
+Major_Markers <- FindAllMarkers(Major_integration_other, assay = "Recluster", only.pos = TRUE, min.pct = 0.25)
+
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+
+Major_Markers_join_geneinfo <- Major_Markers %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+
+write_tsv(x = Major_Markers_join_geneinfo, file = paste(params$workingDir, params$majorresult, "Markers_Major_integration_other_0.1.tsv", sep = "/"))
+
+```
+
+
+```{r}
+# load RDS file
+Minor_integration_other <- readRDS(paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+Major_integration_other <- readRDS(paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+
+# load marker genes file
+Minor_Markers_join_geneinfo <- read_tsv(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Markers_Minor_integration_other_0.05.tsv", sep = "/"))
+minor_marker <- Minor_Markers_join_geneinfo %>% distinct() %>%
+  filter(avg_log2FC > log2(1.5)) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+
+Major_Markers_join_geneinfo <- read_tsv(paste(params$workingDir, params$majorresult, "Markers_Major_integration_other_0.1.tsv", sep = "/"))
+major_marker <- Major_Markers_join_geneinfo %>% distinct() %>%
+  filter(avg_log2FC > log2(1.5)) %>%
+  filter((pct.1- pct.2) > 0.2 ) %>%
+  filter((pct.1 > 0.5))
+
+```
+
+
+# Top 50 markers analysis
+```{r}
+
+top50.minor_markers <- minor_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+top50.major_markers <- major_marker %>%
+    group_by(cluster) %>%
+    slice_max(n = 50, order_by = avg_log2FC)
+
+
+top50.marker_minor_vs_major <- left_join(x = top50.minor_markers, y = top50.major_markers, join_by(gene == gene)) %>% rename(cluster.minor = "cluster.x", cluster.major = "cluster.y")
+# # save
+# write_tsv(x = top50.marker_minor_vs_major, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major.tsv", sep = "/"))
+
+marker_minor_vs_major_diff <- filter(top50.marker_minor_vs_major, is.na(cluster.major))
+# # save
+# write_tsv(x = marker_minor_vs_major_diff, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major_diff.tsv", sep = "/"))
+
+marker_minor_vs_major_same <- filter(top50.marker_minor_vs_major, !is.na(cluster.major))
+# # save
+# write_tsv(x = marker_minor_vs_major_same, file = paste(params$workingDir, params$dataDir, 
+#                                                   "sub_marker_minor_vs_major_same.tsv", sep = "/"))
+
+
+#max(unique(minor_marker$cluster))
+df <- data.frame(matrix(nrow = 0, ncol = 3))
+for(i in (0 : 12 )){
+  df_1 <- top50.marker_minor_vs_major %>% select(cluster.minor, cluster.major) %>% filter(cluster.minor == i)
+  count_1 <- count(df_1, cluster.minor, cluster.major)
+  df <- rbind(df, count_1)
+  }
+
+df_wide <- df %>% pivot_wider(names_from = cluster.major, values_from = n, values_fill = list(n=0))
+df_wide_diff <- df_wide[, c("cluster.minor", "NA")] %>% tibble::column_to_rownames("cluster.minor") %>% rename( diff = 'NA')
+df_wide_diff <- rowSums(df_wide_diff)
+
+df_wide <- df_wide %>% tibble::column_to_rownames("cluster.minor")
+df_cluster_sum <- rowSums(df_wide)
+
+list <- colnames(df_wide)
+df_wide_same <- df_wide[, c( "0","1","2","3","4","5","6","7","8")]
+df_same_sum <- rowSums(df_wide_same)
+
+
+h1 <- Heatmap(as.matrix(df_wide_same), name = "color key",
+              cluster_columns = FALSE,
+              show_row_dend = FALSE, show_column_dend = F,
+              row_names_side = "left", row_dend_side = "left", row_names_gp = gpar(fontsize = 8),
+              column_names_side = "top", column_dend_side = "top", column_names_rot = 0, column_names_gp = gpar(fontsize = 8),
+              column_title = 'major - cluster', column_title_side = 'top', column_title_rot = 0,
+              row_title = 'minor - cluster', row_title_side = 'left', row_title_rot = 90,
+              col = colorRamp2(c(0, 25), c("sky blue", "red")), 
+              cell_fun = function(j, i, x, y, width, height, fill) { if (df_wide_same[i, j] > 0)
+              grid.text(df_wide_same[i, j], x, y, gp = gpar(fontsize = 8))
+})
+
+ha1 <- rowAnnotation('sums' = anno_barplot(df_same_sum, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "orange"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50, 75),
+                                                             labels = c("0", "25", "50", "75"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+
+ha2 <- rowAnnotation('diff' = anno_barplot(df_wide_diff, add_numbers = TRUE, border = FALSE, gp = gpar(fill = "sky blue"),
+                                           axis_param = list(side = "top", at = c(0, 25, 50, 75),
+                                                             labels = c("0","25", "50", "75"), labels_rot = 55, gp = gpar(fontsize = 5))), 
+                                         annotation_name_side = "top", annotation_name_rot = 0)
+
+
+h1 + ha1 + ha2
+Dim_Minor <- DimPlot(Minor_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.05" , label = TRUE, label.size = 5)
+Dim_Major <- DimPlot(Major_integration_other, reduction = "umap", group.by = "Recluster_snn_res.0.1", label = TRUE, label.size = 5)
+
+# save
+pdf(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/recluster_Top50_Marker_minorVSmajor_other.pdf", sep = "/"))
+print(h1 + ha1 + ha2)
+dev.off()
+
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Dim_Minor_0.05.pdf", sep = "/"), Dim_Minor)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Dim_Major_0.1.pdf", sep = "/"), Dim_Major)
+
+```
+
+```{r}
+library(usethis) 
+usethis::edit_r_environ()
+```
+
+# Merge Minor and Major data
+```{r}
+
+Minor_integration_other <- readRDS(paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+Minor_integration_other$Batch <- "Minor_B1"
+Major_integration_other <- readRDS(paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+Major_integration_other$Batch <- paste0("Major_", Major_integration_other@meta.data$Batch)
+
+Minor_Major_other <- merge(Minor_integration_other, Major_integration_other)
+
+unique(Minor_Major_other@meta.data$Batch)
+
+
+DefaultAssay(Minor_Major_other) <- "RNA"
+Minor_Major_other.list <- SplitObject(Minor_Major_other, split.by = "Batch")
+Minor_Major_other.list <- lapply(X = Minor_Major_other.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+features <- SelectIntegrationFeatures(object.list = Minor_Major_other.list)
+
+Minor_Major_other.list <- lapply(X = Minor_Major_other.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+Minor_Major_other.anchors <- FindIntegrationAnchors(object.list = Minor_Major_other.list, anchor.features = features,
+                                                           reduction = "rpca", k.anchor = 70)
+Minor_Major_other <- IntegrateData(anchorset = Minor_Major_other.anchors, new.assay.name = "Minor_Major")
+
+saveRDS(Minor_Major_other, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Minor_Major_other.rds", sep = "/"))
+
+
+Minor_Major_other <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Minor_Major_other.rds", sep = "/"))
+Minor_Major_other <- ScaleData(Minor_Major_other, verbose = FALSE)
+Minor_Major_other <- RunPCA(Minor_Major_other, npcs = 20, verbose = FALSE)
+Minor_Major_other <- RunUMAP(Minor_Major_other, reduction = "pca", dims = 1:20)
+
+Minor_Major_other <- FindNeighbors(Minor_Major_other, dims = 1:20)
+Minor_Major_other <- FindClusters(Minor_Major_other, resolution = 0.01)
+Minor_Major_other <- FindClusters(Minor_Major_other, resolution = 0.05)
+Minor_Major_other <- FindClusters(Minor_Major_other, resolution = 0.1)
+Minor_Major_other <- FindClusters(Minor_Major_other, resolution = 0.2)
+
+DimPlot(Minor_Major_other, reduction = "umap", group.by = "Minor_Major_snn_res.0.01" , label = TRUE, label.size = 5)
+Dim_Minor_Major <- DimPlot(Minor_Major_other, reduction = "umap", group.by = "Minor_Major_snn_res.0.05" , label = TRUE, label.size = 5)
+DimPlot(Minor_Major_other, reduction = "umap", group.by = "Minor_Major_snn_res.0.1" , label = TRUE, label.size = 5)
+DimPlot(Minor_Major_other, reduction = "umap", group.by = "Minor_Major_snn_res.0.2" , label = TRUE, label.size = 5)
+# choose resolution 0.05
+saveRDS(Minor_Major_other, paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Minor_Major_other.rds", sep = "/"))
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Dim_Minor_Major_0.05.pdf", sep = "/"), Dim_Minor_Major)
+
+Minor_Major_other_Markers <- FindAllMarkers(Minor_Major_other, assay = "Recluster", only.pos = TRUE, min.pct = 0.25)
+source(paste(params$repositoryPath, params$geneInfo, sep = "/"))
+geneInfo = getGeneInfoFull()
+Minor_Major_other_Markers <- Minor_Major_other_Markers %>% left_join(geneInfo, by = c("gene" = "scGeneName"))
+write_tsv(x = Minor_Major_other_Markers, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Minor_Major_other_Markers_0.05.tsv", sep = "/"))
+
+
+Minor_Major_other_Markers <- Minor_Major_other_Markers[, c("gene", "cluster")]  %>% rename(cluster.minor_major = "cluster")
+minor_marker  <- minor_marker[, c("gene", "cluster")]  %>% rename(cluster.minor = "cluster")
+major_marker <- major_marker[, c("gene", "cluster")]  %>% rename(cluster.major = "cluster")
+
+cluster_info <- left_join(Minor_Major_other_Markers, minor_marker)
+cluster_info <- left_join(cluster_info, major_marker)
+
+write_tsv(x = cluster_info, file = paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/cluster_info.tsv", sep = "/"))
+
+cluster_info_1 <- subset(cluster_info, cluster_info["cluster.minor"] == "9")
+
+```
+
+#New_figures
+```{r}
+
+Minor_integration_other <- readRDS(paste(params$workingDir, params$MinorResult, "integration_add_MarkerGenes/Other_clusters/Minor_integration_other.rds", sep = "/"))
+
+Major_integration_other <- read_rds(paste(params$workingDir, params$majorresult, "Major_integration_other.rds", sep = "/"))
+
+Minor_Major_other <- readRDS(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Minor_Major_other.rds", sep = "/"))
+
+
+```
+
+```{r}
+source("colorSchemes.R")
+AmpullateColors_2 <- AmpullateColors_2()
+```
+
+
+```{r}
+
+Minor_Major_other@meta.data$orig.ident <- gsub("Sample", "Major", Minor_Major_other@meta.data$orig.ident)
+
+unique(Minor_Major_other@meta.data$orig.ident)
+
+GB1_ident = Minor_Major_other@meta.data %>%
+  ggplot(aes(Minor_Major_snn_res.0.05, fill = orig.ident)) +
+  geom_bar(identity = "fill") + 
+  scale_fill_manual(values = AmpullateColors_2) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+Dim_Minor_Major_1 <- DimPlot(Minor_Major_other, reduction = "umap", group.by = "orig.ident" , label = TRUE, label.size = 5, cols = AmpullateColors_2)
+
+Dim_Minor_Major_2 <- DimPlot(Minor_Major_other, reduction = "umap", group.by = "Minor_Major_snn_res.0.05" , label = TRUE, label.size = 5)
+
+GB1_ident + Dim_Minor_Major_2
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/GB1_ident.pdf", sep = "/"), GB1_ident)
+ggsave(paste(params$workingDir, params$MinorResultDir, "integration_add_MarkerGenes/Other_clusters/Dim_Minor_Major_1_0.05.pdf", sep = "/"), Dim_Minor_Major_1)
+
+```
+
