@@ -17,6 +17,8 @@ Our investigation has revealed the presence of five distinct cell types within t
 These discoveries shed new light on the complexity and variety of spider silk production, which may serve as an inspiration for the creation of novel biomaterials with extraordinary mechanical properties.
 
 
+
+
 You can re-run this code by this order:
 
 
@@ -32,4 +34,10 @@ You can re-run this code by this order:
 6. Minor_celltypes annotation_AddMarkerGenes.Rmd
 
 
-8. Minor_Reclustering_0.2.Rmd
+8. Minor_Reclustering_AddMarkerGenes.Rmd
+
+
+9. Other_Clusters.Rmd
+
+
+* You can change the file location and name by change params at the top of these codes.
