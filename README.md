@@ -15,3 +15,21 @@ A better understanding of how the different glands work can help us to produce a
 In this study, we present a high-resolution spatial map of the minor ampullate gland at a single-cell level. 
 Our investigation has revealed the presence of five distinct cell types within the gland, and we were able to map their spatial distribution over the gland. 
 These discoveries shed new light on the complexity and variety of spider silk production, which may serve as an inspiration for the creation of novel biomaterials with extraordinary mechanical properties.
+
+
+You can re-run this code by this order:
+
+
+1. Minor_QC_analysis_AddMarkerGenes.Rmd
+
+
+2. Minor_scCellTypeAnalysis_AddMarkerGenes.Rmd
+
+
+4. Marker_Minor_VS_Major_AddMarkerGenes.Rmd
+
+
+6. Minor_celltypes annotation_AddMarkerGenes.Rmd
+
+
+8. Minor_Reclustering_0.2.Rmd
